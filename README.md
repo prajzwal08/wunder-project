@@ -227,6 +227,28 @@ The server refreshes every two hours during daylight, so `fetch()` tops up at mo
 day. **Please keep it that way** — it is someone else's server, and no rate limit is
 documented.
 
+## The published dataset
+
+`data/published/` holds the same record resampled to 30 minutes — 25 MB for all fourteen
+loggers, committed to the repo. A deployment with no local cache reads it off disk and asks
+the API only for records since the last published timestamp: **1.7 s instead of 60 s**, and
+one small request instead of a full-history pull.
+
+Cumulative and daily statistics are identical to the 5-minute record at this step; only
+sub-half-hour detail is lost, and the figures decimate to ~4000 points regardless. Logger
+diagnostics (battery, logger temperature, reference pressure) are dropped and values stored
+as float32.
+
+Refresh it after pulling new data:
+
+```bash
+python -m wunder.update_all      # or: python -c "import wunder; wunder.update_all()"
+python -m wunder.publish
+git add data/published && git commit -m "Refresh published dataset" && git push
+```
+
+The 5-minute cache in `data/raw/` stays local and is gitignored.
+
 ## Layout
 
 ```
@@ -238,5 +260,7 @@ wunder/plots.py      Plotly figure builders
 sites.yaml           registry data: installed vs observed, per logger
 info.txt             original site notes from the network operator
 trial/               original proof of concept, kept for provenance
-data/raw/            Parquet cache (gitignored, rebuilt from the API)
+wunder/publish.py    build/read the committed 30-minute dataset
+data/published/      30-minute record, committed — what a deployment reads
+data/raw/            5-minute cache, gitignored, rebuilt from the API
 ```

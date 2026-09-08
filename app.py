@@ -46,6 +46,7 @@ MEASURES = {"moisture": "Soil moisture", "temperature": "Soil temperature",
 
 HAS_CACHE = (w.fetch_module.CACHE_DIR.exists()
              and any(w.fetch_module.CACHE_DIR.glob("*.parquet")))
+HAS_PUBLISHED = w.publish.available()
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
@@ -63,6 +64,10 @@ def load(serial: str, token: int, days: int | None = None) -> pd.DataFrame:
         # False would mean "never hit the network", so the record would freeze at whatever
         # was cached the first time.
         return w.fetch(serial, refresh=True if token else None)
+    if HAS_PUBLISHED:
+        # Deployment path: the bulk comes off disk instantly and only the tail since the
+        # last published timestamp crosses the network.
+        return w.publish.read_current(serial)
     df = w.fetch(serial, start="2020-01-01", cache=False)
     return w.resample(df, "30min") if not df.empty else df
 
@@ -287,7 +292,9 @@ days, start, end = time_range("exp")
 if st.sidebar.button("Refresh from server", width='stretch'):
     st.session_state.token += 1
     load.clear()
-with st.spinner(f"Loading {lg.name}…" + ("" if HAS_CACHE else "  (first view of a logger takes ~1 min)")):
+with st.spinner(f"Loading {lg.name}…"
+                 + ("" if HAS_CACHE or HAS_PUBLISHED
+                    else "  (first view of a logger takes ~1 min)")):
     try:
         full = load(lg.serial, st.session_state.token)
     except w.FetchError as e:
@@ -296,8 +303,9 @@ with st.spinner(f"Loading {lg.name}…" + ("" if HAS_CACHE else "  (first view o
 
 st.sidebar.caption(
     (f"Data to {full.index.max():%d %b %H:%M}. " if not full.empty else "No data. ")
-    + ("Topped up automatically once a day; the button forces it."
-       if HAS_CACHE else "Fetched live from the API.")
+    + ("Topped up automatically once a day; the button forces it." if HAS_CACHE
+       else "Published record, topped up live." if HAS_PUBLISHED
+       else "Fetched live from the API.")
 )
 
 st.title(lg.name)

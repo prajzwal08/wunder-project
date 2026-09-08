@@ -12,6 +12,7 @@ Nothing here imports Streamlit; the app is a separate, thin layer.
 """
 
 from . import fetch as fetch_module
+from . import publish
 from . import plots as plot
 from .fetch import FetchError, cache_status, fetch, is_stale, units, update, update_all
 from .metadata import (
@@ -70,6 +71,7 @@ __all__ = [
     "overview",
     "fetch_module",
     "plot",
+    "publish",
     "resample",
     "root_zone",
     "rzsm",
