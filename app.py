@@ -59,7 +59,10 @@ def load(serial: str, token: int, days: int | None = None) -> pd.DataFrame:
     be quicker still, but then the Summary tab has no earlier years to compare against.
     """
     if HAS_CACHE:
-        return w.fetch(serial, refresh=bool(token))
+        # None lets fetch() decide: top up if the cache is more than a day old. Passing
+        # False would mean "never hit the network", so the record would freeze at whatever
+        # was cached the first time.
+        return w.fetch(serial, refresh=True if token else None)
     df = w.fetch(serial, start="2020-01-01", cache=False)
     return w.resample(df, "30min") if not df.empty else df
 
@@ -284,8 +287,11 @@ days, start, end = time_range("exp")
 if st.sidebar.button("Refresh from server", width='stretch'):
     st.session_state.token += 1
     load.clear()
-st.sidebar.caption(("Cache stale — refresh to update." if w.is_stale(lg)
-                    else "Cache up to date.") + " Pulled at most once a day.")
+st.sidebar.caption(
+    f"Data to {full.index.max():%d %b %H:%M}. "
+    + ("Topped up automatically once a day; the button forces it."
+       if HAS_CACHE else "Fetched live from the API.")
+)
 
 with st.spinner(f"Loading {lg.name}…" + ("" if HAS_CACHE else "  (first view of a logger takes ~1 min)")):
     try:
