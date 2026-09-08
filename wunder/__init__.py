@@ -30,6 +30,7 @@ from .metadata import (
 )
 from .process import (
     active_measures,
+    circular_mean,
     coverage,
     cumulative_year,
     field_series,
@@ -53,6 +54,7 @@ __all__ = [
     "Site",
     "active_measures",
     "cache_status",
+    "circular_mean",
     "coverage",
     "cumulative_year",
     "depth_columns",

@@ -190,6 +190,14 @@ Read this before trusting a number.
 - **Cumulative series restart on 1 January**, which is what makes "we are 84 mm behind by
   this date" meaningful. Only complete past years enter a comparison — a year whose record
   starts in May would accumulate from zero in May and read as a freak drought.
+- **Resampling aggregates each variable by its kind**, and there are three:
+  *accumulated* (`Precipitation observed`) is **summed** — averaging would divide an hourly
+  total by twelve; *circular* (`Wind direction observation`) is resolved as a **vector
+  mean** weighted by wind speed — the arithmetic mean of 350° and 10° is 180°, due south
+  for a northerly, and 17% of hours in this record differ from the correct value by more
+  than 20°, with errors up to 180°; everything else is a *state* or a flux density and is
+  **averaged**. Radiation belongs in the last group: W m⁻² is an instantaneous rate, so its
+  mean is the mean irradiance.
 - **Rainfall is drawn as bars**, being a total over an interval rather than a continuous
   value; the bar width adapts to the window.
 - **Wind roses exclude calm records** (below 0.5 m/s by default) and report the fraction

@@ -54,11 +54,11 @@ RZ = "#6a3d9a"
 
 FONT = '"Times New Roman", Times, Georgia, serif'
 
-FS_TITLE = 17
-FS_LEGEND = 14
-FS_AXIS_TITLE = 15
-FS_TICK = 13
-FS_NOTE = 12
+FS_TITLE = 21
+FS_LEGEND = 17
+FS_AXIS_TITLE = 18
+FS_TICK = 16
+FS_NOTE = 14
 
 PRECIP = "Precipitation observed"
 AIR_T = "Air Temperature observation"
@@ -96,7 +96,7 @@ def _style(fig: go.Figure, title: str | None, height: int, *, legend: bool = Tru
         font=dict(family=FONT, size=FS_TICK, color=INK_2),
         title=dict(text=title, font=dict(family=FONT, size=FS_TITLE, color=INK),
                    x=0, xanchor="left", y=0.97, yanchor="top") if title else None,
-        margin=dict(l=78, r=78, t=62 if title else 34, b=52),
+        margin=dict(l=94, r=94, t=76 if title else 40, b=64),
         height=height,
         hovermode="x unified",
         hoverlabel=dict(bgcolor=SURFACE, bordercolor=AXIS,
@@ -197,7 +197,7 @@ def soil_moisture(
     cols = depth_columns(df, "moisture")
     d = _decimate(df, max_points)
     bar, freq = _rain_bars(df) if precip else (None, "")
-    fig = _panel(_title(logger, "Soil moisture"), 420, secondary=bar is not None)
+    fig = _panel(_title(logger, "Soil moisture"), 460, secondary=bar is not None)
 
     if bar is not None:
         fig.add_trace(bar, secondary_y=True)
@@ -224,7 +224,7 @@ def soil_temperature(
     """Soil temperature by depth, with air temperature — same unit, one axis."""
     cols = depth_columns(df, "temperature")
     d = _decimate(df, max_points)
-    fig = _panel(_title(logger, "Soil temperature"), 420)
+    fig = _panel(_title(logger, "Soil temperature"), 460)
 
     if air and AIR_T in d.columns and d[AIR_T].notna().any():
         fig.add_trace(_line(d.index, d[AIR_T], "Air", MUTED, width=1.0, fmt=".1f"))
@@ -251,7 +251,7 @@ def root_zone_moisture(
     depths = depths_of(depth_columns(df, "moisture"))
     label = f"RZSM ({depths[0]:g}–{depths[-1]:g} cm)" if depths else "RZSM"
     bar, freq = _rain_bars(df) if precip else (None, "")
-    fig = _panel(_title(logger, "Root-zone soil moisture"), 420, secondary=bar is not None)
+    fig = _panel(_title(logger, "Root-zone soil moisture"), 460, secondary=bar is not None)
 
     if bar is not None:
         fig.add_trace(bar, secondary_y=True)
@@ -274,7 +274,7 @@ def matric_potential(
     """Soil water potential by depth (TEROS21). More negative = drier."""
     cols = depth_columns(df, "matric_potential")
     d = _decimate(df, max_points)
-    fig = _panel(_title(logger, "Matric potential"), 420)
+    fig = _panel(_title(logger, "Matric potential"), 460)
     for c in cols:
         fig.add_trace(_line(d.index, d[c], _depth_label(c), _col_color(c), fmt=".1f"))
     fig.update_yaxes(title_text="Matric potential (kPa)")
@@ -306,7 +306,7 @@ def matric_potential_vpd(
         cols = [c for c in cols if c.split()[-1].removesuffix("cm") in set(depths)]
 
     d = _decimate(df, max_points)
-    fig = _panel(_title(logger, "Matric potential and vapour pressure deficit"), 440,
+    fig = _panel(_title(logger, "Matric potential and vapour pressure deficit"), 480,
                  secondary=True)
 
     if col in source.columns and source[col].notna().any():
@@ -360,7 +360,7 @@ def precipitation(
 ) -> go.Figure:
     """Rainfall totals as bars, with an optional cumulative curve."""
     bar, freq = _rain_bars(df, freq)
-    fig = _panel(_title(logger, "Precipitation"), 400, secondary=cumulative)
+    fig = _panel(_title(logger, "Precipitation"), 440, secondary=cumulative)
     if bar is None:
         return fig
     bar.marker.color = RAIN
@@ -383,7 +383,7 @@ def temperature_radiation(
 ) -> go.Figure:
     """Air and root-zone soil temperature with solar radiation on the right axis."""
     d = _decimate(df.assign(_rzst=root_zone(df, "temperature")), max_points)
-    fig = _panel(_title(logger, "Temperature and radiation"), 420, secondary=True)
+    fig = _panel(_title(logger, "Temperature and radiation"), 460, secondary=True)
 
     if RADIATION in d.columns and d[RADIATION].notna().any():
         fig.add_trace(
@@ -458,7 +458,7 @@ def wind_rose(
         font=dict(family=FONT, size=FS_TICK, color=INK_2),
         title=dict(text=_title(logger, "Wind rose"),
                    font=dict(family=FONT, size=FS_TITLE, color=INK), x=0, xanchor="left"),
-        barmode="stack", height=500, margin=dict(l=40, r=130, t=60, b=60),
+        barmode="stack", height=560, margin=dict(l=50, r=160, t=76, b=72),
         legend=dict(orientation="v", yanchor="middle", y=0.5, xanchor="left", x=1.02,
                     font=dict(family=FONT, size=FS_LEGEND, color=INK_2),
                     title=dict(text="Wind speed", font=dict(family=FONT, size=FS_NOTE))),
@@ -687,7 +687,7 @@ def seasonal(
     if not show:
         return _panel(_title(logger, "Year on year — no matching years"), 300)
 
-    fig = _panel(_title(logger, f"{label} — year on year"), 420)
+    fig = _panel(_title(logger, f"{label} — year on year"), 460)
     newest = show[-1]
     # Years are ordered, so use a light->dark blue ramp; the current year is thicker.
     ramp = ["#b7d3f6", "#86b6ef", "#5598e7", "#2a78d6", "#1c5cab", "#0d366b"]
@@ -860,13 +860,13 @@ def climatology(
         return _panel(_title(logger, f"{title} — no complete earlier year to compare"), 320)
 
     past, now = s[s.index.year < newest], s[s.index.year == newest]
-    fig = _panel(_title(logger, f"{title} — {newest} vs previous years"), 430)
+    fig = _panel(_title(logger, f"{title} — {newest} vs previous years"), 470)
     if dropped:
         fig.add_annotation(
             text=f"{', '.join(str(y) for y in dropped)} excluded — incomplete year",
             showarrow=False, xref="paper", yref="paper", x=1, y=-0.16, xanchor="right",
             font=dict(family=FONT, size=FS_NOTE, color=MUTED))
-        fig.update_layout(margin=dict(l=78, r=78, t=62, b=68))
+        fig.update_layout(margin=dict(l=94, r=94, t=76, b=82))
 
     if len(past):
         g = past.groupby(past.index.dayofyear)
@@ -949,6 +949,6 @@ def coverage_heatmap(
     ))
     _style(fig, _title(logger, "Data coverage"), max(320, 24 * len(cov.columns) + 130),
            legend=False)
-    fig.update_layout(margin=dict(l=215, r=30, t=62, b=52), hovermode="closest")
+    fig.update_layout(margin=dict(l=250, r=34, t=76, b=64), hovermode="closest")
     fig.update_yaxes(showgrid=False, autorange="reversed")
     return fig

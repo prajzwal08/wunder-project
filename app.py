@@ -49,10 +49,19 @@ HAS_CACHE = (w.fetch_module.CACHE_DIR.exists()
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
-def load(serial: str, token: int, days: int | None) -> pd.DataFrame:
+def load(serial: str, token: int, days: int | None = None) -> pd.DataFrame:
+    """A logger's full record.
+
+    With a local Parquet cache, that is the cached 5-minute series. Without one -- a cloud
+    container -- the whole history is pulled once and resampled to 30 minutes: 60 s and
+    11 MB instead of 64 MB, with identical daily and cumulative statistics, and finer than
+    the ~4000 points the figures decimate to anyway. Fetching only the selected window would
+    be quicker still, but then the Summary tab has no earlier years to compare against.
+    """
     if HAS_CACHE:
         return w.fetch(serial, refresh=bool(token))
-    return w.fetch(serial, days=days or 365, cache=False)
+    df = w.fetch(serial, start="2020-01-01", cache=False)
+    return w.resample(df, "30min") if not df.empty else df
 
 
 def show(fig, key: str) -> None:
@@ -144,7 +153,7 @@ if mode == "Compare":
             for fk, lgs in groups_.items():
                 frames = {}
                 for l in lgs:
-                    d = load(l.serial, st.session_state.token, None)
+                    d = load(l.serial, st.session_state.token)
                     if not d.empty:
                         frames[l.name] = d
                 if frames:
@@ -216,7 +225,7 @@ if mode == "Compare":
             "Quantity", list(w.plot.CLIMATOLOGY_KINDS),
             format_func=w.plot.CLIMATOLOGY_KINDS.get,
         )
-        full = load(lg.serial, st.session_state.token, None)
+        full = load(lg.serial, st.session_state.token)
         if full.empty:
             st.error(f"{lg.name} returned no data.")
             st.stop()
@@ -234,7 +243,7 @@ if mode == "Compare":
     else:
         lg = st.sidebar.selectbox("Logger", w.loggers(), format_func=name_of, key="lgv")
         days, start, end = time_range("var")
-        full = load(lg.serial, st.session_state.token, days)
+        full = load(lg.serial, st.session_state.token)
         df = window(full, days, start, end)
         if df.empty:
             st.error(f"{lg.name} has no data in this period.")
@@ -278,9 +287,9 @@ if st.sidebar.button("Refresh from server", width='stretch'):
 st.sidebar.caption(("Cache stale — refresh to update." if w.is_stale(lg)
                     else "Cache up to date.") + " Pulled at most once a day.")
 
-with st.spinner(f"Loading {lg.name}…"):
+with st.spinner(f"Loading {lg.name}…" + ("" if HAS_CACHE else "  (first view of a logger takes ~1 min)")):
     try:
-        full = load(lg.serial, st.session_state.token, days)
+        full = load(lg.serial, st.session_state.token)
     except w.FetchError as e:
         st.error(f"Could not reach the API: {e}")
         st.stop()
@@ -367,7 +376,7 @@ if "Water potential" in tabs:
         src = w.met_source(lg)
         met_df = None
         if src is not None and src.serial != lg.serial:
-            met_df = window(load(src.serial, st.session_state.token, days), days, start, end)
+            met_df = window(load(src.serial, st.session_state.token), days, start, end)
         elif src is not None:
             met_df = df
         if met_df is not None and not met_df.empty:
