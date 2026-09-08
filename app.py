@@ -287,18 +287,18 @@ days, start, end = time_range("exp")
 if st.sidebar.button("Refresh from server", width='stretch'):
     st.session_state.token += 1
     load.clear()
-st.sidebar.caption(
-    f"Data to {full.index.max():%d %b %H:%M}. "
-    + ("Topped up automatically once a day; the button forces it."
-       if HAS_CACHE else "Fetched live from the API.")
-)
-
 with st.spinner(f"Loading {lg.name}…" + ("" if HAS_CACHE else "  (first view of a logger takes ~1 min)")):
     try:
         full = load(lg.serial, st.session_state.token)
     except w.FetchError as e:
         st.error(f"Could not reach the API: {e}")
         st.stop()
+
+st.sidebar.caption(
+    (f"Data to {full.index.max():%d %b %H:%M}. " if not full.empty else "No data. ")
+    + ("Topped up automatically once a day; the button forces it."
+       if HAS_CACHE else "Fetched live from the API.")
+)
 
 st.title(lg.name)
 st.caption(f"{lg.serial}  ·  {lg.site_name} — {lg.field_name}  ·  "
