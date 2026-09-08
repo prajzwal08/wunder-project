@@ -1,0 +1,22 @@
+# Cached logger data. Rebuilt from the API by `wunder.update_all()`.
+# ~1.5 GB raw across 14 loggers, and it changes on every refresh -- never commit it.
+data/raw/
+data/
+
+# Published (downsampled) data is opt-in; uncomment if you decide to ship it.
+# !data/published/
+
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.streamlit/secrets.toml
+.venv/
+*.egg-info/
+
+# Runtime logs
+streamlit.log
+*.log
+
+# Working notes, kept local
+CLAUDE.md
+PLAN.md

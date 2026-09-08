@@ -1,0 +1,15 @@
+# Force the light theme. The figures are built for a white ground and publication use;
+# a viewer's OS dark mode would otherwise invert the app chrome around white charts.
+[theme]
+base = "light"
+primaryColor = "#2a78d6"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f7f7f5"
+textColor = "#1a1a1a"
+font = "serif"
+
+[browser]
+gatherUsageStats = false
+
+[server]
+headless = true

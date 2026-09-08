@@ -1,0 +1,205 @@
+Site Voedselbos Glanerbeek
+F1 Field 1
+F2 Field 2
+
+Device Name F1_1_ATMOS_SMST1 
+Serial Number z6-21176
+Device Height (cm) 200 cm
+Port 1 ATMOS 41 All-in-one Weather Station 200 cm
+Port 2 5TM Moisture/Temp -5 cm
+Port 3 5TM Moisture/Temp -10 cm
+Port 4 5TM Moisture/Temp -20 cm
+Port 5 5TM Moisture/Temp -40 cm
+Port 6 5TM Moisture/Temp -80 cm
+Latitude 52.2228237
+Longitude 6.9789189
+Elevation 39 m
+Time zone UTC+02
+
+Device Name F1_2_SMST2
+Device Height (cm) Not Set
+Serial Number z6-21178
+Port 1 5TM Moisture/Temp -2 cm
+Port 2 5TM Moisture/Temp -5 cm
+Port 3 5TM Moisture/Temp -10 cm
+Port 4 5TM Moisture/Temp -20 cm
+Port 5 5TM Moisture/Temp -40 cm
+Port 6 5TM Moisture/Temp -80 cm
+Latitude 52.2235497
+Longitude 6.9779229
+Elevation 39 m
+Time zone UTC+02
+
+Device Name F1_3_SMST3
+Device Height (cm) Not Set
+Serial Number z6-25928
+Port 1 TEROS11 Moisture/Temp -2 cm
+Port 2 TEROS11 Moisture/Temp -5 cm
+Port 3 TEROS11 Moisture/Temp -10 cm
+Port 4 TEROS11 Moisture/Temp -20 cm
+Port 5 TEROS11 Moisture/Temp -40 cm
+Port 6 TEROS11 Moisture/Temp -80 cm
+Latitude 52.223116
+Longitude 6.9790983
+Elevation 42 m
+Time zone UTC+02
+
+Device Name F1_4_WPST
+Device Height (cm) Not Set
+Serial Number z6-25927
+Port 1 TEROS21 Water Potential/Temp -2 cm
+Port 2 TEROS21 Water Potential/Temp -5 cm
+Port 3 TEROS21 Water Potential/Temp -10 cm
+Port 4 TEROS21 Water Potential/Temp -20 cm
+Port 5 TEROS21 Water Potential/Temp -40 cm
+Port 6 TEROS21 Water Potential/Temp -80 cm
+Latitude 52.2231025
+Longitude 6.9791568
+Elevation 36 m
+Time zone UTC+02
+
+Device Name F1_5_WP_SMST
+Device Height (cm) Not Set
+Serial Number z6-28931
+Port 1 TEROS21 Water Potential/Temp -40 cm
+Port 2 TEROS12 Moisture/Temp/EC -40 cm
+Port 3 TEROS21 Water Potential/Temp -20 cm
+Port 4 TEROS12 Moisture/Temp/EC -20 cm
+Port 5 TEROS21 Water Potential/Temp -5 cm
+Port 6 TEROS21 Moisture/Temp/EC -5 cm
+Latitude 52.2229283
+Longitude 6.9789413
+Elevation 37 m
+Time zone UTC+02
+
+Device Name F1_6_WP_SMST
+Device Height (cm) Not Set
+Serial Number z6-24636
+Port 1 TEROS21 Water Potential/Temp -40 cm
+Port 2 TEROS12 Moisture/Temp/EC -40 cm
+Port 3 TEROS21 Water Potential/Temp -20 cm
+Port 4 TEROS12 Moisture/Temp/EC -20 cm
+Port 5 TEROS21 Water Potential/Temp -5 cm
+Port 6 TEROS21 Moisture/Temp/EC -5 cm
+Latitude 52.2236207
+Longitude 6.9780227
+Elevation 41 m
+Time zone UTC+02
+
+Device Name F2_1_ATMOS_SMST1
+Device Height (cm) 200 cm
+Serial Number z6-21177
+Port 1 ATMOS 41 All-in-one Weather Station 200 cm
+Port 2 5TM Moisture/Temp -5 cm
+Port 3 5TM Moisture/Temp -10 cm
+Port 4 5TM Moisture/Temp -20 cm
+Port 5 5TM Moisture/Temp -40 cm
+Port 6 5TM Moisture/Temp -80 cm
+Latitude 52.2241568
+Longitude 6.9801598
+Elevation 40 m
+Time zone UTC+02
+
+Device Name F2_2_SMST2
+Device Height (cm) Not Set
+Serial Number z6-21179
+Port 1 5TM Moisture/Temp -2 cm
+Port 2 5TM Moisture/Temp -5 cm
+Port 3 5TM Moisture/Temp -10 cm
+Port 4 5TM Moisture/Temp -20 cm
+Port 5 5TM Moisture/Temp -40 cm
+Port 6 5TM Moisture/Temp -80 cm
+Latitude 52.2250124
+Longitude 6.9795964
+Elevation 41 m
+Time zone UTC+02
+
+Device Name F2_3_WP_SMST
+Device Height (cm) Not Set
+Serial Number z6-30173
+Port 1 TEROS21 Water Potential/Temp -40 cm
+Port 2 TEROS12 Moisture/Temp/EC -40 cm
+Port 3 TEROS21 Water Potential/Temp -20 cm
+Port 4 TEROS12 Moisture/Temp/EC -20 cm
+Port 5 TEROS21 Water Potential/Temp -5 cm
+Port 6 TEROS21 Moisture/Temp/EC -5 cm
+Latitude 52.2244892
+Longitude 6.979046
+Elevation 37 m
+Time zone UTC+02
+
+Site Voedselbos Ketelbroek
+K1 Voedselbos
+K2 Grasveld
+
+Device Name K1_ATMOS_SMST
+Device Height (cm) 200 cm
+Serial Number z6-21180
+Port 1 ATMOS 41 All-in-one Weather Station 200 cm
+Port 2 5TM Moisture/Temp -5 cm
+Port 3 5TM Moisture/Temp -10 cm
+Port 4 5TM Moisture/Temp -20 cm
+Port 5 5TM Moisture/Temp -40 cm
+Port 6 5TM Moisture/Temp -80 cm
+Latitude 51.7691913
+Longitude 5.9661972
+Elevation 26 m
+Time zone UTC+02
+
+Device Name K2_ATMOS_SMST
+Device Height (cm) 200 cm
+Serial Number z6-08819
+Port 1 ATMOS 41 All-in-one Weather Station 200 cm
+Port 2 5TM Moisture/Temp -5 cm
+Port 3 5TM Moisture/Temp -10 cm
+Port 4 5TM Moisture/Temp -20 cm
+Port 5 5TM Moisture/Temp -40 cm
+Port 6 5TM Moisture/Temp -80 cm
+Latitude 51.7694497
+Longitude 5.9636768
+Elevation 21 m
+Time zone UTC+02
+
+Site Wenumseveld Herenboeren
+W1 Field 1
+Device Name W1_ATMOS_SMST1
+Device Height (cm) Not Set
+Serial Number z6-08820
+Port 1 ATMOS 41 All-in-one Weather Station 200 cm
+Port 2 5TM Moisture/Temp -2 cm
+Port 3 5TM Moisture/Temp -5 cm
+Port 4 5TM Moisture/Temp -10 cm
+Port 5 5TM Moisture/Temp -40 cm
+Port 6 5TM Moisture/Temp -80 cm
+Latitude 52.25111111
+Longitude 5.96972222
+Elevation 20 m
+Time zone UTC+02
+
+Device Name W1_SMST2
+Device Height (cm) Not Set
+Serial Number z6-08823
+Port 1 None Selected
+Port 2 None Selected
+Port 3 5TM Moisture/Temp -5 cm
+Port 4 5TM Moisture/Temp -10 cm
+Port 5 5TM Moisture/Temp -20 cm
+Port 6 5TM Moisture/Temp -40 cm
+Latitude 52.2503848
+Longitude 5.9701204
+Elevation 11 m
+Time zone UTC+02
+
+Device Name W1_SMST3
+Device Height (cm) Not Set
+Serial Number z6-08822
+Port 1 None Selected
+Port 2 None Selected
+Port 3 5TM Moisture/Temp -5 cm
+Port 4 5TM Moisture/Temp -10 cm
+Port 5 5TM Moisture/Temp -20 cm
+Port 6 5TM Moisture/Temp -40 cm
+Latitude 52.2509272
+Longitude 5.969698
+Elevation 14 m
+Time zone UTC+02

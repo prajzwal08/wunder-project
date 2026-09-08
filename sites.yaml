@@ -1,0 +1,353 @@
+# WUNDER logger registry.
+#
+# `installed` comes from info.txt (authoritative for identity, coordinates and what was put
+# in the ground). `observed` is a measured snapshot of what actually returns non-null data —
+# they disagree, and the disagreement is the interesting part (dead sensors).
+#
+# Depths use the label the API puts in column names, which is NOT always what info.txt says:
+# a port documented as -2 cm appears as "2.5cm". `documented_cm` keeps the info.txt value.
+#
+# Column name = "<measure prefix> <depth>cm", e.g. "Soil moisture 2.5cm".
+
+meta:
+  timezone: UTC+02
+  resolution_minutes: 5
+  observed_measured_on: 2026-09-08
+  observed_window: 2026-09-01/2026-09-08
+
+# measure key -> API column prefix (case-sensitive!)
+measures:
+  moisture: Soil moisture
+  temperature: Soil temperature
+  temperature_2: Soil Temperature second measurement
+  matric_potential: Matric Potential
+  conductivity: Electric conductivity
+
+# Present only on loggers with an ATMOS-41 station.
+met_columns:
+  - Air Pressure
+  - Air Temperature observation
+  - Precipitation observed
+  - Radiation observation
+  - Vapor Pressure
+  - Vapor Pressure Deficit
+  - Wind direction observation
+  - Wind speed observation
+
+# On every logger; diagnostics rather than science.
+housekeeping_columns:
+  - Battery Level in %
+  - BatteryLevel in Volt
+  - Logger Temperature
+  - Reference Pressure
+
+sensors:
+  5TM:      [moisture, temperature]
+  TEROS11:  [moisture, temperature]
+  TEROS12:  [moisture, temperature, conductivity]
+  TEROS21:  [matric_potential, temperature]
+
+sites:
+
+  - key: glanerbeek
+    name: Voedselbos Glanerbeek
+    fields:
+      F1: Field 1
+      F2: Field 2
+    loggers:
+
+      - name: F1_1_ATMOS_SMST1
+        serial: z6-21176
+        field: F1
+        latitude: 52.2228237
+        longitude: 6.9789189
+        elevation_m: 39
+        weather_station: {model: ATMOS 41, height_cm: 200}
+        installed:
+          - {depth: "5",  documented_cm: 5,  sensor: 5TM}
+          - {depth: "10", documented_cm: 10, sensor: 5TM}
+          - {depth: "20", documented_cm: 20, sensor: 5TM}
+          - {depth: "40", documented_cm: 40, sensor: 5TM}
+          - {depth: "80", documented_cm: 80, sensor: 5TM}
+        observed:
+          met: true
+          moisture: ["5", "10", "20", "40", "80"]
+          temperature: ["5", "10", "20", "40", "80"]
+
+      - name: F1_2_SMST2
+        serial: z6-21178
+        field: F1
+        latitude: 52.2235497
+        longitude: 6.9779229
+        elevation_m: 39
+        weather_station: null
+        installed:
+          - {depth: "2.5", documented_cm: 2,  sensor: 5TM}
+          - {depth: "5",   documented_cm: 5,  sensor: 5TM}
+          - {depth: "10",  documented_cm: 10, sensor: 5TM}
+          - {depth: "20",  documented_cm: 20, sensor: 5TM}
+          - {depth: "40",  documented_cm: 40, sensor: 5TM}
+          - {depth: "80",  documented_cm: 80, sensor: 5TM}
+        observed:
+          met: false
+          moisture: ["2.5", "5", "10", "40", "80"]
+          temperature: ["2.5", "5", "10", "40", "80"]
+        issues:
+          - "20 cm installed but returns no data (also noted in trial/Ketelbroek_DataReport.ipynb cell 5)"
+
+      - name: F1_3_SMST3
+        serial: z6-25928
+        field: F1
+        latitude: 52.223116
+        longitude: 6.9790983
+        elevation_m: 42
+        weather_station: null
+        installed:
+          - {depth: "2.5", documented_cm: 2,  sensor: TEROS11}
+          - {depth: "5",   documented_cm: 5,  sensor: TEROS11}
+          - {depth: "10",  documented_cm: 10, sensor: TEROS11}
+          - {depth: "20",  documented_cm: 20, sensor: TEROS11}
+          - {depth: "40",  documented_cm: 40, sensor: TEROS11}
+          - {depth: "80",  documented_cm: 80, sensor: TEROS11}
+        observed:
+          met: false
+          moisture: ["2.5", "5", "10", "20", "40", "80"]
+          temperature: ["2.5", "5", "10", "20", "40", "80"]
+
+      - name: F1_4_WPST
+        serial: z6-25927
+        field: F1
+        latitude: 52.2231025
+        longitude: 6.9791568
+        elevation_m: 36
+        weather_station: null
+        installed:
+          - {depth: "2.5", documented_cm: 2,  sensor: TEROS21}
+          - {depth: "5",   documented_cm: 5,  sensor: TEROS21}
+          - {depth: "10",  documented_cm: 10, sensor: TEROS21}
+          - {depth: "20",  documented_cm: 20, sensor: TEROS21}
+          - {depth: "40",  documented_cm: 40, sensor: TEROS21}
+          - {depth: "80",  documented_cm: 80, sensor: TEROS21}
+        observed:
+          met: false
+          matric_potential: ["2.5", "5", "10", "20", "40", "80"]
+          temperature: ["2.5", "5", "10", "20", "40", "80"]
+
+      - name: F1_5_WP_SMST
+        serial: z6-28931
+        field: F1
+        latitude: 52.2229283
+        longitude: 6.9789413
+        elevation_m: 37
+        weather_station: null
+        installed:
+          - {depth: "5",  documented_cm: 5,  sensor: TEROS21}
+          - {depth: "5",  documented_cm: 5,  sensor: TEROS12}
+          - {depth: "20", documented_cm: 20, sensor: TEROS21}
+          - {depth: "20", documented_cm: 20, sensor: TEROS12}
+          - {depth: "40", documented_cm: 40, sensor: TEROS21}
+          - {depth: "40", documented_cm: 40, sensor: TEROS12}
+        observed:
+          met: false
+          moisture: ["5", "20", "40"]
+          temperature: ["5", "20", "40"]
+          temperature_2: ["5", "20", "40"]
+          matric_potential: ["5", "20", "40"]
+          conductivity: ["5", "20", "40"]
+        notes:
+          - "info.txt calls port 6 'TEROS21 Moisture/Temp/EC' — a typo for TEROS12; EC data at 5 cm confirms it."
+          - "Two temperature series per depth. Which of TEROS21/TEROS12 maps to 'Soil temperature' vs 'Soil Temperature second measurement' is unconfirmed."
+
+      - name: F1_6_WP_SMST
+        serial: z6-24636
+        field: F1
+        latitude: 52.2236207
+        longitude: 6.9780227
+        elevation_m: 41
+        weather_station: null
+        installed:
+          - {depth: "5",  documented_cm: 5,  sensor: TEROS21}
+          - {depth: "5",  documented_cm: 5,  sensor: TEROS12}
+          - {depth: "20", documented_cm: 20, sensor: TEROS21}
+          - {depth: "20", documented_cm: 20, sensor: TEROS12}
+          - {depth: "40", documented_cm: 40, sensor: TEROS21}
+          - {depth: "40", documented_cm: 40, sensor: TEROS12}
+        observed:
+          met: false
+          moisture: ["5", "20", "40"]
+          temperature: ["5", "20", "40"]
+          temperature_2: ["5", "20", "40"]
+          matric_potential: ["5", "20", "40"]
+          conductivity: ["5", "20", "40"]
+
+      - name: F2_1_ATMOS_SMST1
+        serial: z6-21177
+        field: F2
+        latitude: 52.2241568
+        longitude: 6.9801598
+        elevation_m: 40
+        weather_station: {model: ATMOS 41, height_cm: 200}
+        installed:
+          - {depth: "5",  documented_cm: 5,  sensor: 5TM}
+          - {depth: "10", documented_cm: 10, sensor: 5TM}
+          - {depth: "20", documented_cm: 20, sensor: 5TM}
+          - {depth: "40", documented_cm: 40, sensor: 5TM}
+          - {depth: "80", documented_cm: 80, sensor: 5TM}
+        observed:
+          met: true
+          moisture: ["5", "10", "20", "40", "80"]
+          temperature: ["5", "10", "20", "40", "80"]
+
+      - name: F2_2_SMST2
+        serial: z6-21179
+        field: F2
+        latitude: 52.2250124
+        longitude: 6.9795964
+        elevation_m: 41
+        weather_station: null
+        installed:
+          - {depth: "2.5", documented_cm: 2,  sensor: 5TM}
+          - {depth: "5",   documented_cm: 5,  sensor: 5TM}
+          - {depth: "10",  documented_cm: 10, sensor: 5TM}
+          - {depth: "20",  documented_cm: 20, sensor: 5TM}
+          - {depth: "40",  documented_cm: 40, sensor: 5TM}
+          - {depth: "80",  documented_cm: 80, sensor: 5TM}
+        observed:
+          met: false
+          moisture: ["2.5", "5", "10", "20", "40", "80"]
+          temperature: ["2.5", "5", "10", "20", "40", "80"]
+        notes:
+          - "API returns met columns for this logger, all 100% empty (0 non-null of 28513 rows over 3 months). Soil-only, as info.txt says."
+
+      - name: F2_3_WP_SMST
+        serial: z6-30173
+        field: F2
+        latitude: 52.2244892
+        longitude: 6.979046
+        elevation_m: 37
+        weather_station: null
+        installed:
+          - {depth: "5",  documented_cm: 5,  sensor: TEROS21}
+          - {depth: "5",  documented_cm: 5,  sensor: TEROS12}
+          - {depth: "20", documented_cm: 20, sensor: TEROS21}
+          - {depth: "20", documented_cm: 20, sensor: TEROS12}
+          - {depth: "40", documented_cm: 40, sensor: TEROS21}
+          - {depth: "40", documented_cm: 40, sensor: TEROS12}
+        observed:
+          met: false
+          moisture: ["5", "20", "40"]
+          temperature: ["5", "20", "40"]
+          temperature_2: ["5", "20", "40"]
+          matric_potential: ["5", "20", "40"]
+          conductivity: ["5", "20", "40"]
+
+  - key: ketelbroek
+    name: Voedselbos Ketelbroek
+    fields:
+      K1: Voedselbos
+      K2: Grasveld
+    loggers:
+
+      - name: K1_ATMOS_SMST
+        serial: z6-21180
+        field: K1
+        latitude: 51.7691913
+        longitude: 5.9661972
+        elevation_m: 26
+        weather_station: {model: ATMOS 41, height_cm: 200}
+        installed:
+          - {depth: "5",  documented_cm: 5,  sensor: 5TM}
+          - {depth: "10", documented_cm: 10, sensor: 5TM}
+          - {depth: "20", documented_cm: 20, sensor: 5TM}
+          - {depth: "40", documented_cm: 40, sensor: 5TM}
+          - {depth: "80", documented_cm: 80, sensor: 5TM}
+        observed:
+          met: true
+          moisture: ["5", "10", "20", "40", "80"]
+          temperature: ["5", "10", "20", "40", "80"]
+
+      - name: K2_ATMOS_SMST
+        serial: z6-08819
+        field: K2
+        latitude: 51.7694497
+        longitude: 5.9636768
+        elevation_m: 21
+        weather_station: {model: ATMOS 41, height_cm: 200}
+        installed:
+          - {depth: "5",  documented_cm: 5,  sensor: 5TM}
+          - {depth: "10", documented_cm: 10, sensor: 5TM}
+          - {depth: "20", documented_cm: 20, sensor: 5TM}
+          - {depth: "40", documented_cm: 40, sensor: 5TM}
+          - {depth: "80", documented_cm: 80, sensor: 5TM}
+        observed:
+          met: true
+          moisture: ["5", "10", "20", "40", "80"]
+          temperature: ["5", "10", "20", "40", "80"]
+          stopped: 2026-08-01
+        issues:
+          - "Stopped reporting 2026-08-01. Has 322k good records from 2023-06-09 -- the history is fine, only the recent window is empty."
+          - "Firmware emitted 161 records dated 2038-01-12 (32-bit time_t overflow). Filtered on ingest."
+
+  - key: wenumseveld
+    name: Wenumseveld Herenboeren
+    fields:
+      W1: Field 1
+    loggers:
+
+      - name: W1_ATMOS_SMST1
+        serial: z6-08820
+        field: W1
+        latitude: 52.25111111
+        longitude: 5.96972222
+        elevation_m: 20
+        weather_station: {model: ATMOS 41, height_cm: 200}
+        installed:
+          - {depth: "2.5", documented_cm: 2,  sensor: 5TM}
+          - {depth: "5",   documented_cm: 5,  sensor: 5TM}
+          - {depth: "10",  documented_cm: 10, sensor: 5TM}
+          - {depth: "40",  documented_cm: 40, sensor: 5TM}
+          - {depth: "80",  documented_cm: 80, sensor: 5TM}
+        observed:
+          met: true
+          moisture: ["2.5", "10", "40", "80"]
+          temperature: ["2.5", "10", "40", "80"]
+        issues:
+          - "5 cm installed but returns no data."
+
+      - name: W1_SMST2
+        serial: z6-08823
+        field: W1
+        latitude: 52.2503848
+        longitude: 5.9701204
+        elevation_m: 11
+        weather_station: null
+        installed:
+          - {depth: "5",  documented_cm: 5,  sensor: 5TM}
+          - {depth: "10", documented_cm: 10, sensor: 5TM}
+          - {depth: "20", documented_cm: 20, sensor: 5TM}
+          - {depth: "40", documented_cm: 40, sensor: 5TM}
+        observed:
+          met: false
+          moisture: ["5", "10", "20", "40"]
+          temperature: ["5", "10", "20", "40"]
+        notes:
+          - "Ports 1-2 unused (None Selected in info.txt)."
+
+      - name: W1_SMST3
+        serial: z6-08822
+        field: W1
+        latitude: 52.2509272
+        longitude: 5.969698
+        elevation_m: 14
+        weather_station: null
+        installed:
+          - {depth: "5",  documented_cm: 5,  sensor: 5TM}
+          - {depth: "10", documented_cm: 10, sensor: 5TM}
+          - {depth: "20", documented_cm: 20, sensor: 5TM}
+          - {depth: "40", documented_cm: 40, sensor: 5TM}
+        observed:
+          met: false
+          moisture: ["5", "10", "20", "40"]
+          temperature: ["5", "10", "20", "40"]
+        notes:
+          - "Ports 1-2 unused (None Selected in info.txt)."
