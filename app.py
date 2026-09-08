@@ -46,7 +46,11 @@ MEASURES = {"moisture": "Soil moisture", "temperature": "Soil temperature",
 
 HAS_CACHE = (w.fetch_module.CACHE_DIR.exists()
              and any(w.fetch_module.CACHE_DIR.glob("*.parquet")))
-HAS_PUBLISHED = w.publish.available()
+# hasattr, not a plain call: Streamlit re-runs this script on a code change but keeps
+# already-imported modules in sys.modules, so a new submodule can be missing from a package
+# object left over from before it existed. Degrade to a live fetch rather than crash; a
+# reboot of the app clears it properly.
+HAS_PUBLISHED = hasattr(w, "publish") and w.publish.available()
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
