@@ -11,9 +11,12 @@ data/raw/. After that it is cached and refreshed at most once a day.
 Nothing here imports Streamlit; the app is a separate, thin layer.
 """
 
+from . import et
+from . import stress
 from . import fetch as fetch_module
 from . import publish
 from . import plots as plot
+from .et import makkink, reference_et, water_balance
 from .fetch import FetchError, cache_status, fetch, is_stale, units, update, update_all
 from .metadata import (
     DEPTH_COLORS,
@@ -25,6 +28,7 @@ from .metadata import (
     loggers,
     measures,
     met_source,
+    soil_source,
     overview,
     site,
     sites,
@@ -60,18 +64,21 @@ __all__ = [
     "cumulative_year",
     "depth_columns",
     "depths_of",
+    "et",
     "fetch",
     "field_series",
     "housekeeping_columns",
     "is_stale",
     "logger",
     "loggers",
+    "makkink",
     "measures",
     "met_source",
     "overview",
     "fetch_module",
     "plot",
     "publish",
+    "reference_et",
     "resample",
     "root_zone",
     "rzsm",
@@ -79,10 +86,13 @@ __all__ = [
     "sensor_status",
     "site",
     "sites",
+    "soil_source",
+    "stress",
     "summary",
     "thicknesses",
     "units",
     "update",
     "update_all",
+    "water_balance",
     "wind_rose_table",
 ]

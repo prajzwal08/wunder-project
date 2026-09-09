@@ -22,10 +22,19 @@ streamlit.log
 # Working notes, kept local
 CLAUDE.md
 PLAN.md
+soil_retention_notes.txt
 
 # Model input built by forcing/make_input.py. ~24 MB, regenerated on every
 # rebuild, and derived entirely from sources the scripts can re-fetch.
-model_input/
+# Listed as contents, not as the directory: git will not descend into an excluded
+# directory, so `model_input/` followed by a negation silently keeps ignoring it.
+model_input/*
+
+# ...except the soil hydraulics, which ARE committed (20 kB). Unlike the forcing
+# NetCDFs these cannot be re-fetched: they come out of a prepared PyStemmusScope run
+# and so need MATLAB, which no deployment has. Without them the water stress factor
+# is unavailable everywhere but this machine. Same reasoning as data/published/.
+!model_input/soil/
 
 # Forcing figures, regenerated with the files they describe.
 plots/

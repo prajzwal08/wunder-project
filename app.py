@@ -336,6 +336,34 @@ live = w.active_measures(full)
 live_cols = set(status.loc[status.live, "column"]) if not status.empty else set()
 met = [c for c in lg.met_columns(df) if c in live_cols]
 
+# Weather and soil water come from whichever logger actually measures them: this one
+# where possible, otherwise the field's ATMOS-41 and the nearest working soil probe.
+# That is what lets every logger show ET and the stress factor, not only the four with
+# their own weather sensors.
+met_lg, soil_lg = w.met_source(lg), w.soil_source(lg)
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def _source_frame(serial: str, token: int) -> pd.DataFrame:
+    return load(serial, token)
+
+
+def source_of(other, base: pd.DataFrame) -> pd.DataFrame | None:
+    """`base` when `other` is this logger, else that logger's own record."""
+    if other is None:
+        return None
+    if other.serial == lg.serial:
+        return base
+    got = _source_frame(other.serial, st.session_state.token)
+    return got if not got.empty else None
+
+
+met_full = source_of(met_lg, full)
+soil_full = source_of(soil_lg, full)
+borrowed = [f"{what} from **{who.name}**"
+            for what, who in (("weather", met_lg), ("soil water", soil_lg))
+            if who is not None and who.serial != lg.serial]
+
 c1, c2, c3 = st.columns(3)
 c1.metric("Records", f"{len(df):,}")
 c2.metric("Shown", f"{df.index.min():%d %b %Y} — {df.index.max():%d %b %Y}")
@@ -358,7 +386,11 @@ if "temperature" in live:
 if "matric_potential" in live:
     names += ["Water potential"]
 if met:
-    names += ["Weather", "Wind"]
+    names += ["Weather"]
+if met_full is not None:
+    names += ["Evapotranspiration"]
+if met:
+    names += ["Wind"]
 names += ["Variables", "Coverage", "Loggers"]
 tabs = dict(zip(names, st.tabs(names)))
 
@@ -415,6 +447,137 @@ if "Weather" in tabs:
         show(w.plot.temperature_radiation(df, logger=lg), "tr")
         show(w.plot.vpd_temperature(df, logger=lg), "vpd")
 
+if "Evapotranspiration" in tabs:
+    with tabs["Evapotranspiration"]:
+        met_win = window(met_full, days, start, end) if met_full is not None else df
+        soil_win = (window(soil_full, days, start, end)
+                    if soil_full is not None else None)
+        if borrowed:
+            st.caption("This logger has no weather sensor of its own — "
+                       + ", ".join(borrowed) + ".")
+        wb = w.water_balance(met_win)
+        if wb.empty:
+            st.warning("Not enough complete days in this period to compute ET₀.")
+        else:
+            e1, e2, e3, e4 = st.columns(4)
+            e1.metric("Mean ET₀", f"{wb.et0.mean():.2f} mm/day")
+            e2.metric("Total ET₀", f"{wb.et0.sum():,.0f} mm")
+            e3.metric("Total rainfall", f"{wb.precip.sum():,.0f} mm")
+            e4.metric("P − ET₀", f"{wb.balance.sum():+,.0f} mm",
+                      help="Positive means rain exceeded atmospheric demand over the "
+                           "period shown.")
+        show(w.plot.reference_et(met_win, logger=met_lg), "et0")
+
+        # Actual ET needs the site's soil parameters; a site whose model input has
+        # not been prepared simply doesn't get this panel.
+        try:
+            aet = (w.stress.actual_et(soil_win, met_win, ref=soil_lg.serial)
+                   if soil_win is not None else None)
+        except (FileNotFoundError, ValueError):
+            aet = None
+        if aet is not None and not aet.empty:
+            show(w.plot.water_limited_et(soil_win, met=met_win,
+                                         ref=soil_lg.serial, logger=lg), "aet")
+            a1, a2, a3 = st.columns(3)
+            a1.metric("Mean K\u209b", f"{aet.ks.mean():.2f}",
+                      help="1 = the soil can meet any demand; 0 = wilting point.")
+            a2.metric("Actual ET", f"{aet.et.sum():,.0f} mm")
+            a3.metric("Demand met", f"{100 * aet.et.sum() / aet.et0.sum():.0f}%",
+                      help="Actual ET as a share of reference ET over the period shown.")
+            st.caption(
+                f"**K\u209b** is the FAO-56 water stress coefficient. \u03b8_fc = "
+                f"{aet.attrs['theta_fc']:.3f} and \u03b8_wp = {aet.attrs['theta_wp']:.3f} "
+                f"m\u00b3 m\u207b\u00b3 come from the van Genuchten curve the model runs "
+                f"on \u2014 SoilGrids texture through Rosetta pedotransfer \u2014 read at "
+                f"\u221233 and \u22121500 kPa over depths "
+                f"{', '.join(aet.attrs['depths'])} cm at {aet.attrs['site']}. Actual ET is "
+                f"K\u209b \u00d7 ET\u2080 with K\u1d9c = 1: no claim is made about how a "
+                f"food forest differs from the reference grass."
+            )
+        with st.expander("How these are calculated"):
+            st.markdown(
+                "#### 1 · Reference ET (Makkink)\n"
+                "The demand a well-watered short grass sward would meet, from global "
+                "radiation and air temperature:\n"
+                "$$ET_0 = 0.65 \\cdot \\frac{s}{s+\\gamma} \\cdot "
+                "\\frac{R_s}{\\lambda}$$\n"
+                "with $s$ the slope of the saturation vapour pressure curve at the day's "
+                "mean temperature, $\\gamma$ the psychrometric constant from measured "
+                "station pressure, $R_s$ the day's global radiation and $\\lambda$ the "
+                "latent heat of vaporisation. The coefficient 0.65 is the Dutch value, so "
+                "this is the same quantity KNMI publishes as `EV24`.\n\n"
+                "**Daily, deliberately.** 0.65 is fitted to daily totals, so radiation is "
+                "averaged over the *full 24 hours* (nights included, then × 86400/10⁶ to "
+                "MJ m⁻² d⁻¹) and temperature is the plain 24-hour mean. A day missing more "
+                "than 10% of its readings is dropped rather than averaged — daytime-only "
+                "radiation is about twice the 24-hour mean, so a partial day would not be "
+                "slightly wrong but roughly doubled. Days are local days, as KNMI's are."
+            )
+            if aet is not None and not aet.empty:
+                a = aet.attrs
+                st.markdown(
+                    "#### 2 · Water stress factor $K_s$ (FAO-56)\n"
+                    "**Step 1 — root-zone soil moisture $\\theta$.** This logger's live "
+                    f"depths ({', '.join(a['depths'])} cm) are combined by the same "
+                    "thickness weighting the *Root zone* tab uses, with layer boundaries "
+                    "at the midpoints between sensors.\n\n"
+                    "**Step 2 — the limits at each depth.** $\\theta_{fc}$ and "
+                    "$\\theta_{wp}$ are read off the van Genuchten curve "
+                    "*STEMMUS_SCOPE itself runs on* — SoilGrids texture through Rosetta "
+                    "pedotransfer — evaluated at −33 kPa and −1500 kPa:\n"
+                    "$$\\theta(h) = \\theta_r + \\frac{\\theta_s - \\theta_r}"
+                    "{[1 + (\\alpha h)^n]^{1-1/n}}$$\n"
+                    "Using the model's own soil is deliberate: $K_s \\cdot ET_0$ and the "
+                    "model's transpiration then rest on the same soil, so a disagreement "
+                    "between them means something.\n\n"
+                    "**Step 3 — collapse the limits with the *same* weights.** The "
+                    "per-depth limits go back through the same weighting as $\\theta$, "
+                    "giving for this logger:\n"
+                    f"* $\\theta_{{fc}}$ = **{a['theta_fc']:.4f}**, "
+                    f"$\\theta_{{wp}}$ = **{a['theta_wp']:.4f}**, "
+                    f"TAW = **{a['taw']:.4f}** m³ m⁻³\n"
+                    f"* stress begins at $\\theta$ = **{a['threshold']:.4f}** "
+                    f"($\\theta_{{fc}} - p\\cdot$TAW)\n\n"
+                    "Weighting $\\theta$ one way and its limits another would make "
+                    "\"$K_s=1$\" mean this profile is at field capacity while the limits "
+                    "described some other average.\n\n"
+                    "**Step 4 — the ratio, clipped to [0, 1]:**\n"
+                    "$$K_s = \\frac{\\theta - \\theta_{wp}}"
+                    "{(1-p)\\,(\\theta_{fc} - \\theta_{wp})}$$\n"
+                    f"$p$ = **{a['p']}** is the depletion fraction, FAO-56 Table 22 for "
+                    "deciduous trees and orchards — the share of available water taken "
+                    "freely, so $1-p$ is the share over which stress develops. Above the "
+                    "threshold the formula exceeds 1 and is clipped; below the wilting "
+                    "point it goes negative and is clipped to 0.\n\n"
+                    "#### 3 · Actual ET\n"
+                    f"$ET = K_s \\cdot K_c \\cdot ET_0$, with $K_c$ = "
+                    f"**{a['crop_coefficient']:g}**. No claim is made about how a food "
+                    "forest's canopy differs from the reference grass: $K_c$ for this "
+                    "vegetation is unknown, and inventing one would bury a guess inside a "
+                    "number that otherwise rests on measurements.\n\n"
+                    f"Soil parameters: **{a['site']}** · source **{a['source']}**."
+                )
+            else:
+                st.markdown(
+                    "#### 2 · Water stress factor\n"
+                    "Not shown for this logger — it needs the site's soil parameters, "
+                    "which are extracted from a prepared model run "
+                    "(`forcing/extract_soil.py`)."
+                )
+
+        st.caption(
+            "**Makkink reference evapotranspiration** — the demand a well-watered short "
+            "grass sward would meet, from global radiation and air temperature with the "
+            "Dutch coefficient 0.65. This is the same quantity KNMI publishes as `EV24`, "
+            "so it is comparable with the national record. It is *not* what this canopy "
+            "actually transpires: a food forest is not grass, and on dry days the soil "
+            "cannot supply the demand. Read it as the demand side, against the soil "
+            "moisture record for the supply side. Makkink also assumes the pyranometer "
+            "sees open sky: a mast that the canopy has grown over under-reads radiation, "
+            "and its ET₀ with it — which is the case at K1 Voedselbos."
+            + (f"  ·  {len(wb):,} complete days in this period." if not wb.empty else "")
+        )
+
 if "Wind" in tabs:
     with tabs["Wind"]:
         a, b = st.columns([1, 3])
@@ -432,14 +595,16 @@ with tabs["Summary"]:
                    "compare against yet.")
     else:
         kinds = list(w.plot.CLIMATOLOGY_KINDS)
-        if "moisture" not in live:
-            kinds.remove("rzsm")
-        if not met:
-            kinds = [k for k in kinds if not k.startswith(("precip", "vpd"))]
+        if soil_full is None:
+            kinds = [k for k in kinds if k not in {"rzsm"} | w.plot.SOIL_KINDS]
+        if met_full is None:
+            kinds = [k for k in kinds if k not in w.plot.MET_KINDS]
 
         # Headline first: where this year stands today against the same date in earlier
         # complete years. The charts below show how it got there.
-        standings = [(k, w.plot.climatology_standing(full, k)) for k in kinds]
+        ref_serial = soil_lg.serial if soil_lg is not None else lg.serial
+        standings = [(k, w.plot.climatology_standing(
+            full, k, ref=ref_serial, met=met_full, soil=soil_full)) for k in kinds]
         standings = [(k, v) for k, v in standings if v]
         if standings:
             cols = st.columns(len(standings))
@@ -463,7 +628,8 @@ with tabs["Summary"]:
         if not kinds:
             st.info("This logger has neither soil moisture nor a weather station.")
         for k in kinds:
-            show(w.plot.climatology(full, kind=k, logger=lg), f"cl{k}")
+            show(w.plot.climatology(full, kind=k, logger=lg, ref=ref_serial,
+                                    met=met_full, soil=soil_full, bars=True), f"cl{k}")
 
 with tabs["Variables"]:
     units = w.units(lg.serial)

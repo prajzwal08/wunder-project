@@ -40,12 +40,13 @@ import wunder; wunder.update_all()
 
 | Tab | Shows |
 |---|---|
-| **Summary** | Where this year stands today against the same date in previous complete years: cumulative rainfall, cumulative VPD, root-zone soil moisture, each with the deviation from normal and a band spanning earlier years |
+| **Summary** | Where this year stands today against the same date in previous complete years — cumulative rainfall, reference ET, root-zone soil moisture, water stress factor, actual ET, P − ET₀ and VPD — each with the deviation from normal and a band spanning earlier years. The rainfall, reference-ET and actual-ET panels also carry that year's weekly totals as bars, so you can see *when* the year accumulated and not only how much |
 | Soil moisture | By depth, with rainfall bars on a reversed right axis |
 | Root zone | Depth-weighted profile average, trapezoid or layer-weighted |
 | Soil temperature | By depth, with air temperature and a 0 °C line |
 | Water potential | Matric potential against VPD — soil supply vs atmospheric demand. VPD comes from the field's ATMOS-41 station, since the TEROS21 loggers carry no weather sensor |
 | Weather | Rainfall (with cumulative), temperature + radiation, VPD + air temperature |
+| Evapotranspiration | Daily Makkink ET₀ against rainfall on one mm-per-day axis with the running P − ET₀ balance; then actual ET drawn inside the ET₀ bars, so the exposed part *is* the water stress, with Kₛ on the right axis. An expander gives the full method with this logger's own numbers |
 | Wind | Wind rose, 16 sectors, ordinal speed bins, calm excluded and reported |
 | Variables | Any column, on demand |
 | Coverage | Heatmap of when each sensor was reporting |
@@ -87,6 +88,12 @@ fig.show()
 | `w.sensor_status(df)` | per-sensor coverage, first/last reading, still-live flag |
 | `w.active_measures(df)` | what is still reporting near the end of the record |
 | `w.rzsm`, `w.rzst`, `w.root_zone` | depth-weighted profile averages |
+| `w.reference_et(df)` | daily Makkink reference ET [mm d⁻¹] |
+| `w.water_balance(df)` | daily rainfall, ET₀ and `P − ET₀` |
+| `w.stress.root_zone_stress(df, ref=…)` | FAO-56 water stress factor Kₛ, with its provenance |
+| `w.stress.actual_et(df, ref=…)` | daily ET₀, Kₛ and the water-limited ET they imply |
+| `w.stress.layer_limits(site)` | θ_fc and θ_wp per SoilGrids layer |
+| `w.met_source(ref)`, `w.soil_source(ref)` | which logger supplies weather / soil water for this one |
 | `w.cumulative_year(s)` | running total that restarts each 1 January |
 | `w.field_series(frames, measure)` | one series per field, averaged over its loggers |
 | `w.wind_rose_table(df)` | direction × speed bins, with the calm fraction |
@@ -187,6 +194,36 @@ Read this before trusting a number.
   potential is an intensive state variable: it spans −10 to −1500 kPa, so a linear mean is
   dominated by the wettest layer and understates stress, and a plant extracts from the
   least-negative layer rather than experiencing the profile mean.
+- **Reference ET is Makkink**, `ET₀ = 0.65 · s/(s+γ) · Rs/λ`, from global radiation and air
+  temperature. It is the Dutch standard — the same quantity KNMI publishes as `EV24` for
+  every station in the country, so these numbers are comparable with the national record
+  (Glanerbeek gives 541 and 551 mm for 2024 and 2025). Penman–Monteith would also need wind
+  at a defined height and would be sensitive to VPD error; in this climate the radiation
+  term dominates and the two agree closely for grass. **The coefficient 0.65 is fitted to
+  daily totals**, so ET₀ is computed on whole days only: a day missing more than 10% of its
+  readings is dropped rather than averaged from whatever hours happen to be present, since
+  radiation over the daylight hours alone is about twice the 24-hour mean. Days are local
+  days, as KNMI's are. ET₀ is the demand a well-watered *grass* sward would meet — not what
+  a food forest actually transpires — and it assumes the pyranometer sees open sky, which
+  K1 Voedselbos's canopy-covered mast does not.
+- **The water stress factor is FAO-56's Kₛ**: 1 while the profile still holds readily
+  available water, falling linearly to 0 at the wilting point,
+  `Kₛ = (θ − θ_wp) / ((1 − p)(θ_fc − θ_wp))`, clipped to [0, 1]. `p = 0.5` is the
+  depletion fraction for deciduous trees and orchards (FAO-56 Table 22).
+  **θ_fc and θ_wp come from the soil STEMMUS_SCOPE itself runs on** — SoilGrids texture
+  through Schaap/Rosetta pedotransfer, assembled by PyStemmusScope — read off the van
+  Genuchten curve at −33 kPa and −1500 kPa, over the top 100 cm. Using the model's own
+  soil is deliberate: `Kₛ · ET₀` and the model's transpiration then rest on the same
+  soil, so a disagreement between them means something. The −33 kPa convention is the
+  model's own, verified by reproducing its `fieldMC` to 0.001 at every layer. The
+  per-depth limits are collapsed to the profile with *the same* weighting as the soil
+  moisture, so "Kₛ = 1" means this profile is at field capacity rather than some other
+  average of some other depths.
+- **A logger uses the nearest instrument that actually measures each thing.** Weather
+  comes from the field's ATMOS-41 (`met_source`) and soil water from the nearest working
+  probe (`soil_source`), so every logger can show ET and stress — `F1_4_WPST` measures no
+  soil moisture at all and borrows F1_3's. Substitutions are named in the app, never
+  silent, and a logger with its own working sensor never borrows.
 - **Cumulative series restart on 1 January**, which is what makes "we are 84 mm behind by
   this date" meaningful. Only complete past years enter a comparison — a year whose record
   starts in May would accumulate from zero in May and read as a freak drought.
@@ -256,6 +293,10 @@ app.py               Streamlit UI — thin; no logic of its own
 wunder/metadata.py   registry: sites, loggers, sensors, column naming
 wunder/fetch.py      API client + incremental Parquet cache
 wunder/process.py    root-zone averages, resampling, wind binning, sensor lifetimes
+wunder/et.py         Makkink reference ET and the P − ET0 water balance
+wunder/stress.py     FAO-56 water stress factor, water-limited ET, retention curves
+forcing/extract_soil.py   caches the model's soil hydraulics as JSON (needs the geo env)
+model_input/soil/    SoilGrids van Genuchten parameters per site, committed
 wunder/plots.py      Plotly figure builders
 sites.yaml           registry data: installed vs observed, per logger
 info.txt             original site notes from the network operator

@@ -251,6 +251,46 @@ def met_source(ref: str | Logger) -> Logger | None:
     return None
 
 
+def soil_source(ref: str | Logger) -> Logger | None:
+    """The logger whose soil moisture applies to `ref`.
+
+    Mirrors `met_source`, for the other half of the pairing. Two loggers here measure no
+    soil moisture at all -- `F1_4_WPST` is matric potential only -- and an offline one
+    measures nothing, so anything derived from soil water (root-zone moisture, the FAO-56
+    stress factor, water-limited ET) needs a stand-in.
+
+    Preference is same field, then same site, then the whole network, and *within* each
+    pool the physically nearest logger, since soil varies over metres. Returns the logger
+    itself when it has its own moisture, so the common case costs nothing and never
+    silently substitutes a neighbour for a working probe.
+    """
+    lg = ref if isinstance(ref, Logger) else logger(ref)
+    if lg.observed_depths("moisture") and not lg.is_offline:
+        return lg
+    pool_all = [x for x in loggers()
+                if x.observed_depths("moisture") and not x.is_offline
+                and x.serial != lg.serial]
+    for pool in (
+        [x for x in pool_all
+         if x.site_key == lg.site_key and x.field_key == lg.field_key],
+        [x for x in pool_all if x.site_key == lg.site_key],
+        pool_all,
+    ):
+        if pool:
+            return min(pool, key=lambda x: _separation_m(lg, x))
+    return None
+
+
+def _separation_m(a: Logger, b: Logger) -> float:
+    """Ground distance between two loggers [m], flat-earth -- they are metres apart."""
+    import math
+
+    dy = (a.latitude - b.latitude) * 111_320.0
+    dx = ((a.longitude - b.longitude) * 111_320.0
+          * math.cos(math.radians((a.latitude + b.latitude) / 2.0)))
+    return math.hypot(dx, dy)
+
+
 def measures() -> dict[str, str]:
     """measure key -> API column prefix."""
     return dict(_registry()["measures"])

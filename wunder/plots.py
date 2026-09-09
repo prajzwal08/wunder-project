@@ -26,6 +26,8 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+from .et import reference_et as _reference_et
+from .et import water_balance as _water_balance
 from .metadata import DEPTH_ORDER, Logger
 from .metadata import logger as _logger
 from .process import depth_columns, depths_of, resample, root_zone, wind_rose_table
@@ -51,6 +53,11 @@ AIR = "#d03b3b"
 RAD = "#eda100"
 VPD_C = "#1baf7a"
 RZ = "#6a3d9a"
+# ET0 is the radiation-driven term, so it takes the radiation hue; the running total
+# takes a darker shade of it, exactly as the rainfall figure does with RAIN.
+ET0_C = RAD
+ET0_CUM = "#a86f00"
+RAIN_CUM = "#1a5aa8"
 
 FONT = '"Times New Roman", Times, Georgia, serif'
 
@@ -133,6 +140,11 @@ def _title(logger: Logger | str | None, text: str) -> str:
 
 
 # -- decimation -------------------------------------------------------------
+
+
+def _ref_name(ref) -> str:
+    """Logger name from a Logger, name or serial -- what wunder.stress looks sites up by."""
+    return ref.serial if isinstance(ref, Logger) else str(ref)
 
 
 def _span_freq(df: pd.DataFrame, max_points: int) -> str | None:
@@ -428,6 +440,123 @@ def vpd_temperature(
     return fig
 
 
+def reference_et(
+    df: pd.DataFrame,
+    *,
+    precip: bool = True,
+    cumulative: bool = True,
+    logger: Logger | str | None = None,
+) -> go.Figure:
+    """Daily Makkink reference ET, against rainfall, with the running balance.
+
+    Rain and ET0 are both mm over the same day, so they share one axis and one bar
+    width -- side by side, at the same scale, supply against demand. That is the whole
+    point of the figure and a second y-scale would destroy it.
+
+    The line on the right axis is the running total of `P - ET0` over the window shown.
+    It rises while rain outpaces demand and falls through a dry spell, so the depth of
+    its trough is the accumulated deficit the soil has had to cover. It restarts at the
+    left edge of the window, not on 1 January -- see `climatology(kind="et0_cumulative")`
+    for the year-to-date view.
+    """
+    et0 = _reference_et(df)
+    fig = _panel(_title(logger, "Makkink reference evapotranspiration"), 460,
+                 secondary=cumulative)
+    if et0.empty:
+        return _panel(_title(logger, "Reference ET — no weather station on this logger"),
+                      320)
+
+    rain = None
+    if precip and PRECIP in df.columns and df[PRECIP].notna().any():
+        rain = df[PRECIP].clip(lower=0.0).resample("1D").sum(min_count=1)
+        rain = rain.reindex(et0.index)
+
+    kw = dict(secondary_y=False) if cumulative else {}
+    if rain is not None:
+        fig.add_trace(go.Bar(
+            x=rain.index, y=rain.values, name="Precipitation", marker_color=RAIN,
+            hovertemplate="%{y:.1f} mm<extra>Rain</extra>"), **kw)
+    fig.add_trace(go.Bar(
+        x=et0.index, y=et0.values, name="Reference ET (Makkink)", marker_color=ET0_C,
+        hovertemplate="%{y:.2f} mm<extra>ET<sub>0</sub></extra>"), **kw)
+    fig.update_layout(barmode="group", bargap=0.15, bargroupgap=0.0)
+    fig.update_yaxes(title_text="Water (mm d<sup>-1</sup>)", **kw)
+
+    if cumulative:
+        if rain is not None:
+            balance = (rain.fillna(0.0) - et0).cumsum()
+            fig.add_trace(_line(balance.index, balance.values,
+                                "Running P − ET<sub>0</sub>", RZ, width=1.8, fmt=".0f"),
+                          secondary_y=True)
+            fig.update_yaxes(title_text="Cumulative P − ET<sub>0</sub> (mm)",
+                             secondary_y=True, showgrid=False)
+            fig.add_hline(y=0, line=dict(color=AXIS, width=1, dash="dot"),
+                          secondary_y=True)
+        else:
+            run = et0.cumsum()
+            fig.add_trace(_line(run.index, run.values, "Cumulative ET<sub>0</sub>",
+                                ET0_CUM, width=1.8, fmt=".0f"), secondary_y=True)
+            fig.update_yaxes(title_text="Cumulative ET<sub>0</sub> (mm)",
+                             secondary_y=True, showgrid=False)
+    return fig
+
+
+def water_limited_et(
+    df: pd.DataFrame,
+    *,
+    met: pd.DataFrame | None = None,
+    ref: str | None = None,
+    p: float = 0.5,
+    crop_coefficient: float = 1.0,
+    logger: Logger | str | None = None,
+) -> go.Figure:
+    """Actual ET against reference ET, with the water stress factor behind it.
+
+    Two bars a day: what the atmosphere asked (ET0, pale) and what the soil could
+    supply (Ks * Kc * ET0, solid). The gap between them *is* the water stress, so it
+    is drawn as a gap rather than as a third series. The line on the right axis is Ks
+    itself, from 1 (the profile can meet any demand) to 0 (wilting point).
+    """
+    from .stress import actual_et
+
+    ref = ref if ref is not None else logger
+    try:
+        out = actual_et(df, met, ref=_ref_name(ref) if ref is not None else None,
+                        p=p, crop_coefficient=crop_coefficient)
+    except (FileNotFoundError, ValueError) as exc:
+        return _panel(_title(logger, f"Actual ET — {exc}".split(".")[0]), 320)
+    if out.empty:
+        return _panel(_title(logger, "Actual ET — needs a weather station and soil "
+                                     "parameters"), 320)
+
+    fig = _panel(_title(logger, "Actual evapotranspiration and water stress"), 470,
+                 secondary=True)
+    fig.add_trace(go.Bar(
+        x=out.index, y=out["et0"], name="Reference ET (demand)",
+        marker_color="rgba(237,161,0,0.32)", marker_line_width=0,
+        hovertemplate="%{y:.2f} mm<extra>ET<sub>0</sub></extra>"), secondary_y=False)
+    fig.add_trace(go.Bar(
+        x=out.index, y=out["et"], name="Actual ET (supplied)", marker_color=ET0_CUM,
+        marker_line_width=0,
+        hovertemplate="%{y:.2f} mm<extra>ET</extra>"), secondary_y=False)
+    # Overlaid, not grouped: actual ET is a *part* of the demand, so it belongs inside
+    # the same bar rather than beside it.
+    fig.update_layout(barmode="overlay", bargap=0.15)
+    fig.update_yaxes(title_text="ET (mm d<sup>-1</sup>)", secondary_y=False)
+
+    fig.add_trace(_line(out.index, out["ks"], "K<sub>s</sub> (stress factor)", RZ,
+                        width=1.6, fmt=".2f"), secondary_y=True)
+    fig.update_yaxes(title_text="K<sub>s</sub> (—)", secondary_y=True, range=[0, 1.05],
+                     showgrid=False)
+    threshold = 1.0 - p
+    fig.add_hline(y=threshold, line=dict(color=AXIS, width=1, dash="dot"),
+                  secondary_y=True,
+                  annotation_text=f"stress begins (p = {p:g})",
+                  annotation_position="right",
+                  annotation_font=dict(family=FONT, size=FS_NOTE, color=MUTED))
+    return fig
+
+
 def wind_rose(
     df: pd.DataFrame,
     *,
@@ -646,6 +775,19 @@ def compare_variables(
 # -- year on year -----------------------------------------------------------
 
 
+def _weekly_from_cumulative(cum: pd.Series, freq: str = "1W") -> pd.Series:
+    """Weekly increments of a running total -- i.e. the weekly total itself.
+
+    Differencing the cumulative curve rather than re-deriving from the raw frame means
+    a bar can never drift out of step with the line drawn above it.
+    """
+    if cum.empty:
+        return cum
+    step = cum.diff()
+    step.iloc[0] = cum.iloc[0]
+    return step.resample(freq).sum(min_count=1).dropna()
+
+
 def _common_calendar(idx: pd.DatetimeIndex) -> pd.DatetimeIndex:
     """Map any year onto 2000 (a leap year) so seasons overlay by date."""
     return pd.to_datetime(
@@ -721,8 +863,34 @@ def seasonal(
 #: summary question. The instantaneous state follows.
 CLIMATOLOGY_KINDS = {
     "precip_cumulative": "Cumulative precipitation",
-    "vpd_cumulative": "Cumulative vapour pressure deficit",
+    "et0_cumulative": "Cumulative reference ET",
     "rzsm": "Root-zone soil moisture",
+    "ks": "Water stress factor",
+    "et_cumulative": "Cumulative actual ET",
+    "balance_cumulative": "Cumulative P − ET₀",
+    "vpd_cumulative": "Cumulative vapour pressure deficit",
+}
+
+#: Kinds that need this logger's own weather station. Only four of the fourteen loggers
+#: report met variables, so a caller listing kinds for a soil logger must drop these.
+MET_KINDS = {"precip_cumulative", "et0_cumulative", "balance_cumulative",
+             "et_cumulative", "ks", "vpd_cumulative"}
+
+#: Kinds that also need the site's soil parameters, so they need a `ref` to look the
+#: site up and are skipped when it is missing or the site has not been extracted.
+SOIL_KINDS = {"et_cumulative", "ks"}
+
+#: Cumulative kinds whose weekly increments are worth drawing as bars beneath the
+#: running total: (colour, noun). Two years can reach the same total by very different
+#: routes, and the bars are what show which. Signed or non-mm kinds are left out --
+#: balance_cumulative crosses zero and vpd_cumulative is not a depth of water.
+#: (colour, axis noun, legend label). The legend sits in one horizontal row above the
+#: plot alongside the range band, the median and the current year, so the bar labels are
+#: kept short -- "2026 weekly reference ET" pushed the row past the plot width.
+BAR_KINDS = {
+    "precip_cumulative": (RAIN, "rainfall", "weekly rain"),
+    "et0_cumulative": (ET0_C, "reference ET", "weekly ET<sub>0</sub>"),
+    "et_cumulative": (ET0_CUM, "actual ET", "weekly ET"),
 }
 
 
@@ -736,33 +904,99 @@ def _has_data(df: pd.DataFrame, col: str) -> bool:
     return col in df.columns and df[col].notna().mean() >= MIN_COVERAGE
 
 
-def _climatology_series(df: pd.DataFrame, kind: str, freq: str) -> tuple[pd.Series, str, bool]:
+def _climatology_series(df: pd.DataFrame, kind: str, freq: str,
+                        ref: str | None = None, met: pd.DataFrame | None = None,
+                        soil: pd.DataFrame | None = None
+                        ) -> tuple[pd.Series, str, bool]:
     """(series, y-axis label, is_cumulative) for a climatology plot."""
+    # A quantity comes from whichever instrument actually measures it: weather from the
+    # field's ATMOS-41, soil water from the nearest logger with working probes. Falling
+    # back to `df` keeps every existing single-frame call working unchanged.
+    wx = met if met is not None else df
+    sm = soil if soil is not None else df
+
     if kind == "rzsm":
-        s = root_zone(df, "moisture", method="trapezoid").dropna()
+        s = root_zone(sm, "moisture", method="trapezoid").dropna()
         return (s.resample(freq).mean().dropna(),
                 f"Root-zone soil moisture ({_UNITS['moisture']})", False)
 
     if kind == "precip_cumulative":
-        if not _has_data(df, PRECIP):
+        if not _has_data(wx, PRECIP):
             return pd.Series(dtype="float64"), "", True
-        daily = df[PRECIP].resample(freq).sum(min_count=1).fillna(0)
+        daily = wx[PRECIP].resample(freq).sum(min_count=1).fillna(0)
         return daily.groupby(daily.index.year).cumsum(), "Cumulative precipitation (mm)", True
 
+    if kind in ("et0_cumulative", "balance_cumulative"):
+        # Both start from daily Makkink ET0, which needs radiation and air temperature.
+        if not (_has_data(wx, RADIATION) and _has_data(wx, AIR_T)):
+            return pd.Series(dtype="float64"), "", True
+        if kind == "et0_cumulative":
+            daily = _reference_et(wx, freq=freq)
+            ylab = "Cumulative reference ET (mm)"
+        else:
+            # P - ET0: the climatic water balance. Unlike the other cumulative kinds it
+            # goes both ways, so the year-to-date value reads directly as a surplus or a
+            # deficit rather than only as a distance from the median.
+            if not _has_data(wx, PRECIP):
+                return pd.Series(dtype="float64"), "", True
+            daily = _water_balance(wx, freq=freq)["balance"]
+            ylab = "Cumulative P − ET₀ (mm)"
+        if daily.empty:
+            return pd.Series(dtype="float64"), "", True
+        daily = daily.reindex(
+            pd.date_range(daily.index.min(), daily.index.max(), freq=freq)
+        ).fillna(0.0)
+        return daily.groupby(daily.index.year).cumsum(), ylab, True
+
+    if kind in ("et_cumulative", "ks"):
+        # Both come from the same pair -- the station's ET0 and the soil's Ks -- so
+        # they are computed together and the kind only picks which one to return.
+        # Needs the site's soil parameters, hence `ref`.
+        if ref is None or not (_has_data(wx, RADIATION) and _has_data(wx, AIR_T)):
+            return pd.Series(dtype="float64"), "", kind == "et_cumulative"
+        from .stress import root_zone_stress
+
+        et0 = _reference_et(wx, freq=freq)
+        if et0.empty:
+            return pd.Series(dtype="float64"), "", kind == "et_cumulative"
+        try:
+            ks, _ = root_zone_stress(sm, ref=_ref_name(ref))
+        except (FileNotFoundError, ValueError):
+            return pd.Series(dtype="float64"), "", kind == "et_cumulative"
+        if ks.empty:
+            return pd.Series(dtype="float64"), "", kind == "et_cumulative"
+        daily_ks = ks.resample(freq).mean()
+
+        if kind == "ks":
+            # A state, not an accumulation: 1 means the profile can meet whatever the
+            # atmosphere asks, 0 means it is at wilting point.
+            return daily_ks.dropna(), "Water stress factor K<sub>s</sub> (—)", False
+
+        actual = (et0 * daily_ks).dropna()
+        if actual.empty:
+            return pd.Series(dtype="float64"), "", True
+        actual = actual.reindex(
+            pd.date_range(actual.index.min(), actual.index.max(), freq=freq)
+        ).fillna(0.0)
+        return (actual.groupby(actual.index.year).cumsum(),
+                "Cumulative actual ET (mm)", True)
+
     if kind == "vpd_cumulative":
-        col = VPD if _has_data(df, VPD) else VP
-        if not _has_data(df, col):
+        col = VPD if _has_data(wx, VPD) else VP
+        if not _has_data(wx, col):
             return pd.Series(dtype="float64"), "", True
         # Daily mean VPD accumulated: an index of how much atmospheric demand the year has
         # delivered so far. Units are kPa-days.
-        daily = df[col].resample(freq).mean().fillna(0)
+        daily = wx[col].resample(freq).mean().fillna(0)
         return (daily.groupby(daily.index.year).cumsum(),
                 f"Cumulative {'VPD' if col == VPD else 'vapour pressure'} (kPa d)", True)
 
     raise ValueError(f"unknown kind {kind!r}; choose from {sorted(CLIMATOLOGY_KINDS)}")
 
 
-def climatology_standing(df: pd.DataFrame, kind: str, *, freq: str = "1D") -> dict | None:
+def climatology_standing(df: pd.DataFrame, kind: str, *, freq: str = "1D",
+                         ref: str | None = None, met: pd.DataFrame | None = None,
+                         soil: pd.DataFrame | None = None) -> dict | None:
     """Where this year stands today against the same date in previous complete years.
 
     Returns the current value, the median and range of earlier years on this calendar day,
@@ -772,7 +1006,7 @@ def climatology_standing(df: pd.DataFrame, kind: str, *, freq: str = "1D") -> di
     if df.empty:
         return None
     try:
-        s, ylab, cumulative = _climatology_series(df, kind, freq)
+        s, ylab, cumulative = _climatology_series(df, kind, freq, ref, met, soil)
     except ValueError:
         return None
     if s.empty:
@@ -809,7 +1043,10 @@ def climatology_standing(df: pd.DataFrame, kind: str, *, freq: str = "1D") -> di
         "min": float(same_day.min()),
         "max": float(same_day.max()),
         "delta": current - median,
-        "pct": (current - median) / median * 100 if median else None,
+        # A percentage of a quantity that changes sign is nonsense: a normal year at
+        # -50 mm and this year at -20 mm is 30 mm *less* dry, but reads as "-60%".
+        "pct": ((current - median) / median * 100
+                if median and kind != "balance_cumulative" else None),
         "years": sorted(int(y) for y in past.index.year.unique()),
         "excluded": sorted(int(y) for y in partial),
     }
@@ -822,8 +1059,17 @@ def climatology(
     freq: str = "1D",
     logger: Logger | str | None = None,
     measure: str | None = None,
+    ref: str | None = None,
+    bars: bool = False,
+    met: pd.DataFrame | None = None,
+    soil: pd.DataFrame | None = None,
 ) -> go.Figure:
     """This year against the spread of previous years, on a common calendar.
+
+    `bars=True` adds the current year's actual precipitation as bars on a right-hand
+    axis, under the cumulative curves. Only meaningful for `precip_cumulative`, where
+    it shows *when* the year's rain fell rather than only how much has accumulated --
+    two years can reach the same total by very different routes.
 
     The shaded band is the min-max envelope of every earlier year and the pale line their
     median, so the current year can be read as wetter or drier, ahead or behind, relative to
@@ -839,7 +1085,9 @@ def climatology(
     if df.empty:
         return _panel(_title(logger, f"{title} — no data"), 400)
 
-    s, ylab, cumulative = _climatology_series(df, kind, freq)
+    s, ylab, cumulative = _climatology_series(df, kind, freq,
+                                              ref if ref is not None else logger,
+                                              met, soil)
     if s.empty:
         return _panel(_title(logger, f"{title} — not available on this logger"), 320)
 
@@ -860,7 +1108,46 @@ def climatology(
         return _panel(_title(logger, f"{title} — no complete earlier year to compare"), 320)
 
     past, now = s[s.index.year < newest], s[s.index.year == newest]
-    fig = _panel(_title(logger, f"{title} — {newest} vs previous years"), 470)
+    with_bars = bars and kind in BAR_KINDS and not now.empty
+    fig = _panel(_title(logger, f"{title} — {newest} vs previous years"), 470,
+                 secondary=with_bars)
+    if with_bars:
+        colour, what, legend_label = BAR_KINDS[kind]
+        # Weekly, not daily: a full year of daily bars is 365 marks behind a line that is
+        # the point of the figure. Weekly totals keep the wet and dry spells legible.
+        stack = []
+        axis_label = f"Weekly {what} (mm)"
+        if kind == "et_cumulative":
+            # Reference ET drawn pale behind actual ET. Actual can never exceed
+            # reference, so overlaid bars leave the shortfall visible as the exposed
+            # part of the pale bar -- and that shortfall *is* the water stress.
+            try:
+                demand, _, _ = _climatology_series(df, "et0_cumulative", freq,
+                                                   ref, met, soil)
+            except ValueError:
+                demand = pd.Series(dtype="float64")
+            if not demand.empty:
+                demand = demand[demand.index.year == newest]
+            if not demand.empty:
+                stack.append((_weekly_from_cumulative(demand), ET0_C,
+                              BAR_KINDS["et0_cumulative"][2], 0.30))
+                axis_label = "Weekly ET (mm)"
+        stack.append((_weekly_from_cumulative(now), colour, legend_label, 0.60))
+
+        drawn = False
+        for weekly, bar_colour, label, opacity in stack:
+            if weekly.empty:
+                continue
+            fig.add_trace(go.Bar(
+                x=_common_calendar(weekly.index), y=weekly.values,
+                name=label, marker_color=bar_colour,
+                marker_line_width=0, opacity=opacity,
+                hovertemplate="%{y:.1f} mm<extra>week</extra>"), secondary_y=True)
+            drawn = True
+        if drawn:
+            fig.update_layout(barmode="overlay")
+            fig.update_yaxes(title_text=axis_label, secondary_y=True,
+                             showgrid=False, rangemode="tozero")
     if dropped:
         fig.add_annotation(
             text=f"{', '.join(str(y) for y in dropped)} excluded — incomplete year",
@@ -877,8 +1164,8 @@ def climatology(
         fig.add_trace(go.Scatter(
             x=x, y=lo.values, mode="lines", line=dict(width=0), fill="tonexty",
             fillcolor="rgba(42,120,214,0.13)",
-            name=f"{past.index.year.min()}–{newest - 1} range", hoverinfo="skip"))
-        fig.add_trace(_line(x, med.values, "median of previous years", "#86b6ef",
+            name=f"{past.index.year.min()}–{newest - 1}", hoverinfo="skip"))
+        fig.add_trace(_line(x, med.values, "median", "#86b6ef",
                             width=1.3, fmt=".1f" if cumulative else ".3f"))
     if len(now):
         x = pd.to_datetime(now.index.dayofyear - 1, unit="D",
@@ -899,7 +1186,11 @@ def climatology(
                   annotation_font=dict(family=FONT, size=FS_NOTE, color=MUTED))
     fig.update_xaxes(tickformat="%b", dtick="M1")
     fig.update_yaxes(title_text=ylab,
-                     range=[0, 0.6] if kind == "rzsm" else None)
+                     range=[0, 0.6] if kind == "rzsm"
+                     else [0, 1.02] if kind == "ks" else None)
+    if kind == "balance_cumulative":
+        # This one crosses zero, and which side of it the year sits on is the reading.
+        fig.add_hline(y=0, line=dict(color=AXIS, width=1, dash="dot"))
     return fig
 
 
