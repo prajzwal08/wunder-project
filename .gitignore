@@ -22,3 +22,13 @@ streamlit.log
 # Working notes, kept local
 CLAUDE.md
 PLAN.md
+
+# Model input built by forcing/make_input.py. ~24 MB, regenerated on every
+# rebuild, and derived entirely from sources the scripts can re-fetch.
+model_input/
+
+# Forcing figures, regenerated with the files they describe.
+plots/
+
+# Model output.
+runs/

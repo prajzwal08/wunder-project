@@ -256,6 +256,52 @@ def measures() -> dict[str, str]:
     return dict(_registry()["measures"])
 
 
+@functools.lru_cache(maxsize=1)
+def forcing_sites() -> dict[str, dict]:
+    """Station code -> settings for building STEMMUS_SCOPE forcing.
+
+    One entry per weather station, not per site: Glanerbeek F1 and F2 are
+    separate, and so are Ketelbroek K1 and K2. Sensors from different stations
+    are never combined, so each forcing file describes exactly one mast.
+
+    Keys are the FLUXNET-style codes both engines use to find a station's files.
+    They must match PyStemmusScope's site pattern `[A-Z]{2}-([A-z]|\\d){3}`, and
+    no code may be a substring of another -- `get_forcing_file` scans a directory
+    for filenames merely *containing* the code and refuses on two matches.
+    """
+    out: dict[str, dict] = {}
+    for code, raw in (_registry().get("forcing") or {}).items():
+        cfg = dict(raw)
+        met = logger(cfg["met_logger"])
+        cfg["code"] = code
+        cfg["latitude"] = met.latitude
+        cfg["longitude"] = met.longitude
+        cfg["elevation_m"] = met.elevation_m
+        cfg["met"] = met
+        cfg["soil"] = [logger(s) for s in cfg.get("soil_loggers") or []]
+        cfg["exclude_columns"] = list(cfg.get("exclude_columns") or [])
+        out[code] = cfg
+
+    clashes = [
+        (a, b) for a in out for b in out if a != b and a in b
+    ]
+    if clashes:
+        raise ValueError(
+            f"station codes must not contain one another: {clashes}. "
+            "PyStemmusScope's get_forcing_file would match both."
+        )
+    return out
+
+
+def forcing_site(code: str) -> dict:
+    """One station's forcing settings, by code."""
+    try:
+        return forcing_sites()[code]
+    except KeyError:
+        known = ", ".join(forcing_sites()) or "none"
+        raise KeyError(f"unknown station code {code!r}; sites.yaml has: {known}") from None
+
+
 def housekeeping_columns() -> list[str]:
     return list(_registry()["housekeeping_columns"])
 

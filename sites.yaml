@@ -10,10 +10,143 @@
 # Column name = "<measure prefix> <depth>cm", e.g. "Soil moisture 2.5cm".
 
 meta:
-  timezone: UTC+02
+  # Local WALL-CLOCK time, with daylight saving — not a fixed +02:00 offset.
+  # Measured, not assumed: the radiation-weighted solar noon at z6-21176 jumps
+  # 12.56 h -> 13.99 h on 2025-03-30 and falls 13.62 h -> 12.43 h on 2025-10-26,
+  # the exact EU DST dates. Structurally too — on 2025-03-30 the record steps
+  # 01:55 -> 03:00 with the 02:00 hour absent, and on 2025-10-26 the repeated
+  # hour appears once, not twice (the file has zero duplicate timestamps).
+  # Reading this as fixed UTC+02 shifts every winter half-hour by an hour.
+  timezone: Europe/Amsterdam
   resolution_minutes: 5
   observed_measured_on: 2026-09-08
   observed_window: 2026-09-01/2026-09-08
+
+# Per-station settings for building STEMMUS_SCOPE forcing (Task 2).
+#
+# ONE FILE PER WEATHER STATION, never per site. Sensors from different stations
+# are never mixed, even within one site: Glanerbeek F1 and F2 get separate files,
+# and so do Ketelbroek K1 and K2. Each file is then evaluated against the soil
+# loggers in its OWN field (`soil_loggers`), so a run is never validated against
+# ground it was not forced by.
+#
+# The alternative -- one file per site, patching a gap in one station from
+# another -- reads well until the two stations turn out to sit in different
+# microclimates. K1 and K2 are 175 m apart at the same site and disagree by a
+# factor of four in wind speed (see the note on NL-Ke1). Whatever is missing is
+# filled from ERA5-Land instead, which is at least a documented, uniform source.
+#
+# `exclude_columns` names columns the station may not supply, which then stay on
+# the ERA5-Land baseline. `run_start` is the first day with both met and soil
+# data.
+#
+# `canopy_height_m` is CAPPED AT 0.8 m at every station, and that is a modelling
+# decision rather than a measurement. The ATMOS-41 sits at 2.0 m, and a canopy
+# taller than the measurement height breaks surface-layer similarity: STEMMUS_SCOPE
+# derives displacement height and roughness from it (d ~ 0.67*hc, z0 ~ 0.1*hc),
+# so a canopy above 2 m would put the reference level inside the canopy and the
+# log-wind profile would be meaningless. At 0.8 m, d + z0 ~ 0.62 m sits safely
+# below the mast. In effect each file forces the layer its own 2 m mast actually
+# represents, not the stand above it.
+#
+# What ETH Global Canopy Height 2020 (10 m) actually reports at these points,
+# for the record, since the cap discards it:
+#     NL-Gl1 5.0 m   NL-Gl2 5.0 m   NL-Ke1 14.0 m   NL-Ke2 4.0 m   NL-We1 4.0 m
+# NL-Ke1's 14 m is independent confirmation that its mast is under the food-forest
+# canopy -- it matches the 75% wind and 30% radiation deficit measured there.
+#
+# The IGBP class is likewise a judgement call; a voedselbos is not a standard
+# type. MODIS MCD12Q1 2024 calls Glanerbeek and Wenumseveld "Savannas" (89-93%
+# of the surrounding kilometre) and Ketelbroek "Cropland/Natural Vegetation
+# Mosaics" -- MODIS reading the Dutch agricultural mosaic, not a considered
+# answer. Note that a 0.8 m canopy is inconsistent with a wooded class, so this
+# should be settled together with the cap above.
+forcing:
+
+  NL-Gl1:
+    label: Voedselbos Glanerbeek — Field 1
+    site: glanerbeek
+    met_logger: z6-21176        # F1_1_ATMOS_SMST1
+    soil_loggers: [z6-21176, z6-21178, z6-25928, z6-25927, z6-28931, z6-24636]
+    exclude_columns: []
+    run_start: 2023-05-19
+    reference_height_m: 2.0
+    canopy_height_m: 0.8
+    elevation_dem_m: 38.9       # Copernicus GLO-30, not the logger GPS
+    igbp_short: SAV
+    igbp_long: "Savannas"
+
+  NL-Gl2:
+    label: Voedselbos Glanerbeek — Field 2
+    site: glanerbeek
+    met_logger: z6-21177        # F2_1_ATMOS_SMST1
+    soil_loggers: [z6-21177, z6-21179, z6-30173]
+    exclude_columns: []
+    run_start: 2023-05-19
+    reference_height_m: 2.0
+    canopy_height_m: 0.8
+    elevation_dem_m: 38.1
+    igbp_short: SAV
+    igbp_long: "Savannas"
+
+  NL-Ke1:
+    label: Voedselbos Ketelbroek — food forest
+    site: ketelbroek
+    met_logger: z6-21180        # K1_ATMOS_SMST
+    soil_loggers: [z6-21180]
+    # Both Ketelbroek gauges read a fraction of the true total: 193/215 mm in
+    # 2024/2025 here and 473 mm at K2, against 968/617 mm at Glanerbeek,
+    # 1056/683 mm at Wenumseveld and ~950 mm/yr from ERA5-Land.
+    exclude_columns: [Precipitation observed]
+    run_start: 2023-06-10
+    reference_height_m: 2.0
+    canopy_height_m: 0.8
+    elevation_dem_m: 16.0
+    igbp_short: CVM
+    igbp_long: "Cropland/Natural Vegetation Mosaics"
+    # WARNING, unresolved. This station reads 0.46 m/s mean wind and 79 W/m2
+    # mean radiation, against 1.6-2.0 m/s and 115-128 W/m2 at every other station
+    # in the network -- including K2, 175 m away in the open at this same site.
+    # The pattern (75% less wind, 30% less radiation, JJA-noon 372 vs 525 W/m2)
+    # is a canopy: the food forest has grown over the mast. Two consequences.
+    # Its rain gauge is then measuring throughfall rather than rainfall, which is
+    # part of why it is excluded above. And STEMMUS_SCOPE expects ABOVE-canopy
+    # forcing, so driving it with these sub-canopy values makes the model apply
+    # its own canopy attenuation a second time. Kept as measured, deliberately,
+    # so NL-Ke1 and NL-Ke2 can be compared -- but do not read NL-Ke1's energy
+    # balance without this in mind.
+
+  NL-Ke2:
+    label: Voedselbos Ketelbroek — grass field
+    site: ketelbroek
+    met_logger: z6-08819        # K2_ATMOS_SMST
+    soil_loggers: [z6-08819]
+    exclude_columns: [Precipitation observed]
+    run_start: 2023-06-10
+    reference_height_m: 2.0
+    canopy_height_m: 0.8
+    elevation_dem_m: 16.1
+    igbp_short: CVM
+    igbp_long: "Cropland/Natural Vegetation Mosaics"
+    # The thinnest record in the network. Met stops 2026-06-21, and the years
+    # before it are patchy too, so only ~74% of this file is measured against
+    # ~99.9% at Glanerbeek and Wenumseveld — the remaining quarter is
+    # bias-corrected ERA5-Land. Usable, but check the qc fractions before
+    # drawing conclusions from it, and prefer NL-Ke1 for anything the canopy
+    # note there does not rule out.
+
+  NL-We1:
+    label: Wenumseveld Herenboeren — Field 1
+    site: wenumseveld
+    met_logger: z6-08820        # W1_ATMOS_SMST1
+    soil_loggers: [z6-08820, z6-08823, z6-08822]
+    exclude_columns: []
+    run_start: 2023-06-07
+    reference_height_m: 2.0
+    canopy_height_m: 0.8
+    elevation_dem_m: 10.9
+    igbp_short: SAV
+    igbp_long: "Savannas"
 
 # measure key -> API column prefix (case-sensitive!)
 measures:
