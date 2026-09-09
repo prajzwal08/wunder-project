@@ -1,11 +1,11 @@
 # Running STEMMUS_SCOPE
 
-Two engines, reading the **same two files** that `forcing/` builds:
-
 ```bash
-python model/run_model.py  --site NL-Gl1 --days 7     # the Python port
-python model/run_matlab.py --site NL-Gl1 --days 7     # the MATLAB model
+python model/run_matlab.py --site NL-Gl1 --days 7
 ```
+
+Runs the compiled MATLAB model on the files `forcing/` builds, through
+PyStemmusScope.
 
 Build the input first if you have not:
 
@@ -17,22 +17,16 @@ See [`forcing/README.md`](../forcing/README.md).
 
 ---
 
-## Why both
+## Which engine
 
-They read identical input, so the comparison is clean. Where the two agree, the
-forcing is doing what it should. Where they disagree, the difference belongs to
-an implementation rather than to the data — which is the question
-`~/stemmus-scope-py/STEMMUSSCOPE_Python_Migration.md` exists to answer.
+The MATLAB model, via the compiled executable at
+`~/STEMMUSSCOPEexe/STEMMUS_SCOPE` and MATLAB Runtime R2022b. No licence needed.
 
-That is not hypothetical here. See *What the first runs showed*, below.
-
-| | `run_model.py` | `run_matlab.py` |
-|---|---|---|
-| engine | `~/stemmus-scope-py`, the Python port | compiled MATLAB, `~/STEMMUSSCOPEexe/STEMMUS_SCOPE` |
-| needs | nothing beyond the `geo` env | MATLAB Runtime R2023a (installed; no licence needed) |
-| site named by | `sites.yaml` code | `Location=NL-Gl1` in a generated `config_file.txt` |
-| vegetation parameters | set in `run_model.py` | `input_data.xlsx`, keyed on `IGBP_veg_long` |
-| output | `runs/<CODE>/<CODE>_run.nc` | `runs/<CODE>/matlab/` |
+There is also a Python port at `~/stemmus-scope-py`, driven by
+`model/run_model.py`, but it is **not the path in use**: on identical forcing it
+produces near-zero canopy transpiration where MATLAB puts half the latent heat
+there. That is a defect in the port, not in the input — see *What the first runs
+showed* below — and fixing it is deferred.
 
 ---
 
@@ -102,8 +96,6 @@ a short run has proved the setup.
 | `--days N` | run N days from `--start` |
 | `--out DIR` | where results go (default `runs/`) |
 
-Both runners take the same flags.
-
 ### Roughly how long
 
 | Window | Steps | MATLAB |
@@ -115,60 +107,49 @@ Both runners take the same flags.
 
 ---
 
-## What `run_model.py` records
+## What the first run showed
 
-`runs/<CODE>/<CODE>_run.nc`:
-
-- fluxes — `Rntot`, `lEtot`, `Htot`, `Gtot`, and the split of latent heat into
-  canopy transpiration `lEctot` and soil evaporation `lEstot`, plus `Actot` (GPP)
-- `SoilMoisture` and `SoilTemperature` at **5, 10, 20, 40 and 80 cm** — chosen to
-  be the WUNDER probe depths, so a run can be compared against the soil loggers
-  in its own field with no regridding
-
-and `runs/<CODE>/<CODE>_parameters.json`, the exact parameters the run used.
-
-> ### The vegetation parameters are a placeholder
->
-> The port has no IGBP-to-parameter lookup, and its shipped `parameters.toml` is
-> Scots pine at NL-Loo: 30 m tall, measured from a 30 m tower. Handing that to a
-> 0.8 m canopy under a 2 m mast would not fail — it would produce numbers.
->
-> `run_model.py` therefore sets the **geometry** correctly, since that is
-> site-specific and unambiguous: canopy height from `sites.yaml`, roughness
-> `z0 = 0.1 hc`, displacement `d = 0.67 hc`, measurement height, coordinates.
-> The **biochemistry** is generic C3 herbaceous — a starting point, not a
-> calibration. Anyone drawing conclusions about these sites needs to revisit it.
-
----
-
-## What the first runs showed
-
-A two-day run at NL-Gl1 (1–2 July 2024) through the Python port:
+A two-day trial at NL-Gl1 (1–2 July 2024):
 
 ```
-Rntot   115.46      lEtot    29.90      Htot     63.90      Gtot     21.54
-                    lEctot    0.01      lEstot   29.89      Actot     5.12
-energy balance: Rn 115.5 = LE 29.9 + H 63.9 + G 21.5  ->  residual 0.1 W/m2
+Rntot   90.18      lEtot   50.00      Htot   40.22      Gtot    0.23
+                   lEctot  25.00      lEstot 24.99      Actot   9.47
+Bowen H/LE = 0.80        transpiration = 50.0% of latent heat
 ```
 
-The energy balance closes to 0.1 W m⁻², so the model is internally consistent.
-But **canopy transpiration is essentially zero**: `lEctot` is 0.01 W m⁻² against
-29.89 for soil evaporation. At midday it is 0.02 W m⁻², 0.03% of latent heat,
-and its maximum over the whole run is 0.057 W m⁻².
+That is a physically correct Dutch grassland in July: Bowen 0.80 against a
+literature 0.3–0.8, half the latent heat as transpiration, and a two-day mean
+ground heat flux of 0.23 W m⁻² — which has to integrate to ≈ 0 over full diurnal
+cycles, and does. **The forcing is validated end to end**, from the logger record
+through to a closed energy balance.
 
-That cannot be right. The same steps give GPP of 11.21 at midday — the canopy is
-assimilating carbon, so its stomata are open, so it must be transpiring. The
-resulting Bowen ratio of 2.14 matches the symptom in `OPEN_ISSUES.md` #9
-(NL-Loo: 2.5, against an observed 0.5–1.5).
+### Why the Python port is not used
 
-**This rules out the leading explanation.** Issue #10 attributes that Bowen ratio
-to LAI collapsing to zero in winter for an evergreen site. In this run LAI is
-**2.05**, soil moisture at 5 cm is 0.256 m³ m⁻³ (unstressed), and photosynthesis
-is active — and transpiration is still ~0. Whatever suppresses it is not the LAI
-forcing.
+The same two files, run through `~/stemmus-scope-py` for the same two days:
 
-Running the MATLAB engine on the same two files is the next step: it separates a
-defect in the port from anything in the input.
+| | MATLAB | Python port |
+|---|---|---|
+| `Rntot` | 90.18 | 115.46 |
+| `lEtot` | 50.00 | 29.90 |
+| `Htot` | 40.22 | 63.90 |
+| `Gtot` (2-day mean) | 0.23 | 21.54 |
+| `lEctot` transpiration | 25.00 | **0.01** |
+| Bowen ratio | 0.80 | 2.14 |
+| transpiration share of LE | 50.0% | **0.04%** |
+
+The port's canopy transpiration is 0.04% of latent heat while its own GPP runs at
+5.12 µmol m⁻² s⁻¹ — a canopy fixing carbon has open stomata and must transpire.
+Its two-day mean `Gtot` of 21.5 W m⁻² is non-physical for the same reason.
+
+This also **rules out the standing explanation** for the port's high Bowen ratio.
+`OPEN_ISSUES.md` #10 attributes it to LAI collapsing to zero in winter at an
+evergreen site. Here LAI is **2.05** — the same value, from the same file, that
+MATLAB transpires normally with — soil moisture at 5 cm is 0.256 m³ m⁻³ and
+unstressed, and photosynthesis is active. Transpiration is still ~0, so the LAI
+forcing is not what suppresses it.
+
+Fixing that is deferred. `model/run_model.py` still exists if you want to
+reproduce the comparison.
 
 ---
 
@@ -187,10 +168,23 @@ the compiled executable. Three details that are easy to get wrong:
   and merged with `open_mfdataset` — so two files matching a station would be
   silently combined rather than refused.
 
-The MATLAB Runtime is installed at both `/usr/local/MATLAB/MATLAB_Runtime/R2023a`
-and `/opt/matlab/MATLAB_Runtime/R2023a` on this machine. `run_matlab.py` checks
-which one actually has the libraries and sets `LD_LIBRARY_PATH` itself, because
-getting it wrong produces a linker error that says nothing about MATLAB.
+### The MATLAB Runtime is R2022b, not R2023a
+
+The compiled model needs `libmwmclmcrrt.so.9.13` — **Runtime 9.13 = R2022b**.
+This machine has three runtimes and the matching one is not in a
+`MATLAB_Runtime/` directory at all: it is inside a full install at
+**`/opt/matlab/R2022b`**. The two `MATLAB_Runtime/R2023a` directories are 9.14,
+and the shell profile points at one of them.
+
+`run_matlab.py` therefore searches by the library the executable actually asks
+for rather than by directory name, and prepends to `LD_LIBRARY_PATH`. Pointed at
+the wrong runtime, the model exits 255 with "Could not find version 9.13 of the
+MATLAB Runtime" — which PyStemmusScope swallows into a bare
+`CalledProcessError` that says nothing about MATLAB.
+
+`hdf5storage` must also be **≥ 0.2.2** in the `geo` env: 0.1.19 uses
+`np.unicode_`, removed in NumPy 2.0, and fails while writing
+`forcing_globals.mat`.
 
 ---
 

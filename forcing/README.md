@@ -153,8 +153,7 @@ on an axis; the axis names both units.
 That is a separate job, in its own directory:
 
 ```bash
-python model/run_model.py  --site NL-Gl1 --days 7     # the Python port
-python model/run_matlab.py --site NL-Gl1 --days 7     # the MATLAB model
+python model/run_matlab.py --site NL-Gl1 --days 7
 ```
 
 See **[`model/README.md`](../model/README.md)**.
@@ -326,7 +325,6 @@ report line `station data from:` says which happened.
 | Script | Does |
 |---|---|
 | `make_input.py` | the whole build: fetch what is missing, assemble, verify |
-| `run_model.py` | run the Python port on a built file |
 | `verify.py` | check produced files; safe to run any time |
 | `plot_forcing.py` | redraw the figures from existing files |
 | `download_era5land.py` | ERA5-Land at a point, from Earth Engine |
