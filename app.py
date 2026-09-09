@@ -51,6 +51,13 @@ HAS_CACHE = (w.fetch_module.CACHE_DIR.exists()
 # object left over from before it existed. Degrade to a live fetch rather than crash; a
 # reboot of the app clears it properly.
 HAS_PUBLISHED = hasattr(w, "publish") and w.publish.available()
+# Same guard, same reason: `wunder.et` and `wunder.stress` are new submodules, and a
+# Streamlit Cloud redeploy re-runs this script while keeping the already-imported
+# package object in sys.modules -- so the new script can meet a `wunder` that predates
+# them. Degrade to the pre-stress app rather than an AttributeError loop; a reboot of
+# the Cloud app clears it properly.
+HAS_STRESS = (hasattr(w, "stress") and hasattr(w, "soil_source")
+              and hasattr(w.plot, "SOIL_KINDS"))
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
@@ -340,7 +347,8 @@ met = [c for c in lg.met_columns(df) if c in live_cols]
 # where possible, otherwise the field's ATMOS-41 and the nearest working soil probe.
 # That is what lets every logger show ET and the stress factor, not only the four with
 # their own weather sensors.
-met_lg, soil_lg = w.met_source(lg), w.soil_source(lg)
+met_lg = w.met_source(lg)
+soil_lg = w.soil_source(lg) if HAS_STRESS else None
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
@@ -472,7 +480,7 @@ if "Evapotranspiration" in tabs:
         # not been prepared simply doesn't get this panel.
         try:
             aet = (w.stress.actual_et(soil_win, met_win, ref=soil_lg.serial)
-                   if soil_win is not None else None)
+                   if HAS_STRESS and soil_win is not None else None)
         except (FileNotFoundError, ValueError):
             aet = None
         if aet is not None and not aet.empty:
@@ -595,8 +603,13 @@ with tabs["Summary"]:
                    "compare against yet.")
     else:
         kinds = list(w.plot.CLIMATOLOGY_KINDS)
+        if not HAS_STRESS:
+            kinds = [k for k in kinds if k in {"precip_cumulative", "et0_cumulative",
+                                               "balance_cumulative", "vpd_cumulative",
+                                               "rzsm"}]
         if soil_full is None:
-            kinds = [k for k in kinds if k not in {"rzsm"} | w.plot.SOIL_KINDS]
+            kinds = [k for k in kinds
+                     if k not in {"rzsm"} | (w.plot.SOIL_KINDS if HAS_STRESS else set())]
         if met_full is None:
             kinds = [k for k in kinds if k not in w.plot.MET_KINDS]
 
