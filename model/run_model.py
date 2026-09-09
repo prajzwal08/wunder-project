@@ -1,7 +1,7 @@
 """Run STEMMUS_SCOPE on a station's forcing, through the Python port.
 
-    python forcing/run_model.py --site NL-Gl1 --days 7
-    python forcing/run_model.py --site NL-Gl1 --start 2024-06-01 --end 2024-08-31
+    python model/run_model.py --site NL-Gl1 --days 7
+    python model/run_model.py --site NL-Gl1 --start 2024-06-01 --end 2024-08-31
 
 Output goes to `runs/<CODE>/`: a NetCDF of the fluxes and soil state, and the
 exact parameters the run used.
@@ -31,7 +31,6 @@ import pandas as pd
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
-sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(REPO))
 
 PORT = Path.home() / "stemmus-scope-py"
@@ -289,17 +288,42 @@ def run(code: str, i_start: int, i_end: int, out_dir: Path) -> Path:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--site", action="append", dest="sites", required=True)
+    parser.add_argument("--site", action="append", dest="sites")
+    parser.add_argument("--all", action="store_true",
+                        help="every station in sites.yaml")
+    parser.add_argument("--jobs", type=int, default=1,
+                        help="stations to run concurrently (default 1)")
     parser.add_argument("--start", help="YYYY-MM-DD")
     parser.add_argument("--end", help="YYYY-MM-DD")
     parser.add_argument("--days", type=int, help="run this many days from --start")
     parser.add_argument("--out", type=Path, default=RUNS_DIR)
     args = parser.parse_args()
 
-    for code in args.sites:
+    if args.all:
+        from wunder.metadata import forcing_sites
+
+        codes = list(forcing_sites())
+    elif args.sites:
+        codes = args.sites
+    else:
+        raise SystemExit("specify --site CODE (repeatable) or --all")
+
+    jobs = []
+    for code in codes:
         forcing_path, _ = find_input(code)
         i0, i1 = window(forcing_path, args.start, args.end, args.days)
-        run(code, i0, i1, args.out / code)
+        jobs.append((code, i0, i1, args.out / code))
+
+    if args.jobs <= 1 or len(jobs) == 1:
+        for job in jobs:
+            run(*job)
+        return 0
+
+    from multiprocessing import Pool
+
+    print(f"running {len(jobs)} stations, {args.jobs} at a time")
+    with Pool(processes=min(args.jobs, len(jobs))) as pool:
+        pool.starmap(run, jobs)
     return 0
 
 

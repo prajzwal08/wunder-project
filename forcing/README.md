@@ -1,7 +1,7 @@
 # Building STEMMUS_SCOPE input from the WUNDER network
 
 This directory turns a **place** and a **date range** into the two NetCDF files
-STEMMUS_SCOPE needs to run, and then runs it.
+STEMMUS_SCOPE needs to run. Running the model itself is `model/`.
 
 Both engines read the same two files — the MATLAB model through PyStemmusScope,
 and the Python port `stemmus-scope-py`. The MATLAB path needs a strict superset
@@ -150,49 +150,14 @@ on an axis; the axis names both units.
 
 ## 4. Run the model
 
+That is a separate job, in its own directory:
+
 ```bash
-python forcing/run_model.py --site NL-Gl1 --days 7        # a week, to check it works
-python forcing/run_model.py --site NL-Gl1 --start 2024-06-01 --end 2024-08-31
-python forcing/run_model.py --site NL-Gl1                 # the whole record
+python model/run_model.py  --site NL-Gl1 --days 7     # the Python port
+python model/run_matlab.py --site NL-Gl1 --days 7     # the MATLAB model
 ```
 
-Writes to `runs/NL-Gl1/`: a NetCDF of fluxes and soil state at 5, 10, 20, 40 and
-80 cm — the WUNDER probe depths, so a run can be compared against the soil
-loggers in its own field without regridding — plus a JSON of the exact parameters
-used.
-
-> **The vegetation parameters are a placeholder.** The port has no
-> IGBP-to-parameter lookup; its shipped `parameters.toml` is Scots pine at
-> NL-Loo, 30 m tall, measured from a 30 m tower. `run_model.py` sets the
-> *geometry* correctly — canopy height, roughness, displacement height,
-> measurement height, coordinates — and generic C3 herbaceous biochemistry.
-> That biochemistry is a starting point, not a calibration. `OPEN_ISSUES.md`
-> #9/#10 is a standing reminder of what happens when vegetation parameters and
-> the site disagree: NL-Loo's Bowen ratio came out at 2.5 against an observed
-> 0.5–1.5, traced to LAI alone.
-
-### The MATLAB engine
-
-Not scripted yet. Write a `config_file.txt` following
-`~/stemmus_scope_sites/configfiles/*/config_file.txt`, with:
-
-```
-Location=NL-Gl1
-ForcingPath=<repo>/model_input/forcing/
-InitialConditionPath=<repo>/model_input/ic/
-SoilPropertyPath=~/STEMMUS_SCOPE_model/STEMMUS_SCOPE_old/STEMMUS_SCOPE/input/SoilProperty/
-StartTime=2023-05-19T00:00
-EndTime=2026-09-02T23:30
-```
-
-then drive it with `StemmusScope(config_file=...,
-model_src_path="~/STEMMUSSCOPEexe/STEMMUS_SCOPE")` — the compiled MCR R2023a
-executable, so no MATLAB licence is needed.
-
-`Location` must be the site code: PyStemmusScope matches it against
-`[A-Z]{2}-([A-z]|\d){3}`, and finds the forcing by scanning `ForcingPath` for a
-filename *containing* it. Two matches raise `ValueError`, so never leave an old
-generation in that directory by hand.
+See **[`model/README.md`](../model/README.md)**.
 
 ---
 
