@@ -565,6 +565,84 @@ def water_limited_et(
     return fig
 
 
+def weekly_balance(
+    df: pd.DataFrame,
+    met: pd.DataFrame | None = None,
+    *,
+    ref: str | None = None,
+    weeks: int = 52,
+    crop_coefficient: float = 1.0,
+    p: float = 0.5,
+    logger: Logger | str | None = None,
+) -> go.Figure:
+    """Week by week: rain in, evaporation out, and what the soil was left with.
+
+    One axis, one unit, one week per bar. Rain goes up, evaporation goes down --
+    reference ET pale for what the atmosphere asked, actual ET solid inside it for
+    what the soil could supply, so the exposed part of the pale bar is the water
+    stress. The line is P - ET, the net the profile actually gained or lost: above
+    zero the store is filling, below it the store is paying for the difference.
+
+    Everything is a weekly total in mm, which is why it can share one axis with a
+    signed quantity -- the cumulative panels cannot, and that is what made them
+    hard to read.
+    """
+    from .stress import actual_et
+
+    ref = ref if ref is not None else logger
+    try:
+        out = actual_et(df, met, ref=_ref_name(ref) if ref is not None else None,
+                        p=p, crop_coefficient=crop_coefficient)
+    except (FileNotFoundError, ValueError) as exc:
+        return _panel(_title(logger, f"Weekly water balance — {exc}".split(".")[0]), 320)
+    if out.empty:
+        return _panel(_title(logger, "Weekly water balance — needs a weather station "
+                                     "and soil parameters"), 320)
+
+    # Rain comes from whichever frame carries the gauge -- the station's, when the soil
+    # logger has none of its own.
+    wx = met if met is not None and _has_data(met, PRECIP) else df
+    if not _has_data(wx, PRECIP):
+        return _panel(_title(logger, "Weekly water balance — no rain gauge"), 320)
+
+    daily = pd.DataFrame({
+        "precip": wx[PRECIP].resample("1D").sum(min_count=1),
+        "et0": out["et0"],
+        "et": out["et"],
+    }).dropna()
+    if daily.empty:
+        return _panel(_title(logger, "Weekly water balance — no overlapping record"), 320)
+
+    totals = {c: _weekly_total(daily[c]) for c in daily.columns}
+    weekly = pd.DataFrame(totals).dropna().tail(weeks)
+    # Widths carried by index, not by position: a week missing from one of the three
+    # series drops out of the middle of the frame, and a positional slice would then
+    # hand every later bar the wrong width.
+    spans = pd.Series(totals["precip"].attrs["width_days"], index=totals["precip"].index)
+    width = spans.reindex(weekly.index).fillna(7).to_numpy() * 0.88 * 86_400_000
+    balance = weekly["precip"] - weekly["et"]
+
+    fig = _panel(_title(logger, "Weekly water balance"), 470)
+    fig.add_trace(go.Bar(x=weekly.index, y=weekly["precip"], width=width, name="rain",
+                         marker_color=RAIN, marker_line_width=0,
+                         hovertemplate="%{y:.1f} mm<extra>rain</extra>"))
+    fig.add_trace(go.Bar(x=weekly.index, y=-weekly["et0"], width=width,
+                         name="reference ET (demand)",
+                         marker_color=ET0_C, opacity=0.32, marker_line_width=0,
+                         hovertemplate="%{y:.1f} mm<extra>ET<sub>0</sub></extra>"))
+    fig.add_trace(go.Bar(x=weekly.index, y=-weekly["et"], width=width,
+                         name="actual ET (supplied)",
+                         marker_color=ET0_CUM, marker_line_width=0,
+                         hovertemplate="%{y:.1f} mm<extra>ET</extra>"))
+    fig.add_trace(go.Scatter(x=weekly.index, y=balance, name="P − ET", mode="lines",
+                             line=dict(color=YEAR_INK, width=2.0),
+                             hovertemplate="%{y:+.1f} mm<extra>P − ET</extra>"))
+    fig.update_layout(barmode="overlay", bargap=0.15)
+    fig.add_hline(y=0, line=dict(color=INK, width=1))
+    fig.update_yaxes(title_text="mm per week")
+    return fig
+
+
 def wind_rose(
     df: pd.DataFrame,
     *,
@@ -801,6 +879,11 @@ def _weekly_from_cumulative(cum: pd.Series, freq: str = "1W") -> pd.Series:
         return cum
     step = cum.diff()
     step.iloc[0] = cum.iloc[0]
+    return _weekly_total(step, freq)
+
+
+def _weekly_total(step: pd.Series, freq: str = "1W") -> pd.Series:
+    """Sum a daily series into weeks, indexed at the middle of the days each covers."""
     step = step.dropna()
     if step.empty:
         return step

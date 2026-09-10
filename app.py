@@ -638,6 +638,20 @@ with tabs["Summary"]:
                 + (f" {', '.join(str(y) for y in ref['excluded'])} excluded — incomplete."
                    if ref["excluded"] else "")
             )
+        # In and out on one axis, one week at a time. The cumulative panels below
+        # answer "where does the year stand"; this one answers "what happened", which
+        # a running total cannot show without a second scale to be confused with.
+        if HAS_STRESS and met_full is not None and soil_full is not None:
+            weeks = st.select_slider("Weeks shown", [13, 26, 52, 104], value=52,
+                                     format_func=lambda n: f"{n} weeks")
+            show(w.plot.weekly_balance(soil_full, met_full, ref=soil_lg.serial,
+                                       weeks=weeks, logger=lg), "wb")
+            st.caption("Rain up, evaporation down, both as weekly totals in mm. The "
+                       "pale part of a downward bar is demand the soil could not "
+                       "meet. The line is P − ET: above zero the profile gained "
+                       "water that week, below zero it paid the difference out of "
+                       "store.")
+
         if not kinds:
             st.info("This logger has neither soil moisture nor a weather station.")
         for k in kinds:
