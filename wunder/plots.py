@@ -571,12 +571,12 @@ def weekly_balance(
     met: pd.DataFrame | None = None,
     *,
     ref: str | None = None,
-    weeks: int = 52,
+    year: int | None = None,
     crop_coefficient: float = 1.0,
     p: float = 0.5,
     logger: Logger | str | None = None,
 ) -> go.Figure:
-    """Week by week: rain, the demand, what evaporated, and what was left over.
+    """Week by week from 1 January: rain, the demand, what evaporated, what was left.
 
     Top row, three upright bars a week: rain, reference ET (what the atmosphere
     asked) and actual ET (what the soil could supply). Reading them side by side is
@@ -586,6 +586,10 @@ def weekly_balance(
     Bottom row, one bar a week: P - ET, the net the profile gained or lost. Above
     zero the store filled, below zero it paid the difference. Its own row because a
     signed residual and the fluxes it comes from do not belong on one scale.
+
+    The window is a calendar year, `year` defaulting to the most recent in the record,
+    so the weeks line up with the cumulative panels beside it and a reader counting
+    deficits is counting them from the same 1 January.
     """
     from .stress import actual_et
 
@@ -613,8 +617,13 @@ def weekly_balance(
     if daily.empty:
         return _panel(_title(logger, "Weekly water balance — no overlapping record"), 320)
 
+    year = int(year if year is not None else daily.index.year.max())
+    daily = daily[daily.index.year == year]
+    if daily.empty:
+        return _panel(_title(logger, f"Weekly water balance — nothing in {year}"), 320)
+
     totals = {c: _weekly_total(daily[c]) for c in daily.columns}
-    weekly = pd.DataFrame(totals).dropna().tail(weeks)
+    weekly = pd.DataFrame(totals).dropna()
     # Widths carried by index, not by position: a week missing from one of the three
     # series drops out of the middle of the frame, and a positional slice would then
     # hand every later bar the wrong width.
@@ -626,19 +635,21 @@ def weekly_balance(
     # on the same axis as the fluxes would spend half the height on nothing.
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
                         row_heights=[0.62, 0.38], vertical_spacing=0.05)
-    _style(fig, _title(logger, "Weekly water balance"), 540)
+    _style(fig, _title(logger, f"Weekly water balance — {year}"), 540)
 
-    # Three bars abreast, the triple centred on the week they belong to. Explicit
-    # offsets rather than Plotly's grouping, because the widths vary: a part-finished
-    # week is drawn narrow, and grouped bars would then sit off its centre.
-    third = width / 3.0
-    for i, (col, name, colour, opacity) in enumerate((
-            ("precip", "rain", RAIN, 1.0),
-            ("et0", "reference ET (demand)", ET0_C, 0.45),
-            ("et", "actual ET (supplied)", ET0_CUM, 1.0))):
+    # Two bars a week, the pair centred on the week they belong to: rain on the left,
+    # evaporation on the right. The two ET terms share that one bar in two shades --
+    # actual ET is *part* of the demand, not a rival to it, so the exposed pale head
+    # is the water stress, read directly off the bar. Explicit offsets rather than
+    # Plotly's grouping, because the widths vary: a part-finished week is drawn narrow,
+    # and grouped bars would then sit off its centre.
+    half = width / 2.0
+    for col, name, colour, opacity, offset in (
+            ("precip", "rain", RAIN, 1.0, -half),
+            ("et0", "reference ET (demand)", ET0_C, 0.40, 0.0),
+            ("et", "actual ET (supplied)", ET0_CUM, 1.0, 0.0)):
         fig.add_trace(go.Bar(
-            x=weekly.index, y=weekly[col], width=third,
-            offset=(i - 1.5) * third, name=name,
+            x=weekly.index, y=weekly[col], width=half, offset=offset, name=name,
             marker_color=colour, opacity=opacity, marker_line_width=0,
             hovertemplate="%{y:.1f} mm<extra>" + name + "</extra>"), row=1, col=1)
 

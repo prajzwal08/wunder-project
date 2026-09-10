@@ -162,13 +162,24 @@ if mode == "Compare":
             "moisture": "Root-zone soil moisture",
             "temperature": "Root-zone soil temperature",
         }
+        # Derived quantities need both halves of a field: its station for the demand
+        # and its soil probe for the supply. Skipped entirely without the stress
+        # module, exactly as the Summary tab is.
+        if HAS_STRESS:
+            QUANTITIES |= {
+                "wsf": "Water stress factor (WSF)",
+                "et_actual": "Actual ET (daily)",
+                "et_cumulative": "Cumulative actual ET (this year)",
+                "et0_cumulative": "Cumulative reference ET (this year)",
+            }
+        DERIVED = {"wsf", "et_actual", "et_cumulative", "et0_cumulative"}
         qty = st.sidebar.selectbox("Quantity", list(QUANTITIES),
                                    format_func=QUANTITIES.get)
         cumulative = qty.endswith("_cumulative")
         days, start, end = time_range("fld", default="1 year" if cumulative else "90 days")
 
         with st.spinner("Loading…"):
-            per_field = {}
+            per_field, field_loggers = {}, {}
             for fk, lgs in groups_.items():
                 frames = {}
                 for l in lgs:
@@ -176,7 +187,9 @@ if mode == "Compare":
                     if not d.empty:
                         frames[l.name] = d
                 if frames:
-                    per_field[site_.fields.get(fk, fk)] = frames
+                    fname_ = site_.fields.get(fk, fk)
+                    per_field[fname_] = frames
+                    field_loggers[fname_] = lgs
 
         if len(per_field) < 2:
             st.warning("Fewer than two fields have data.")
@@ -184,7 +197,34 @@ if mode == "Compare":
 
         series, notes, gaps = {}, [], []
         for fname, frames in per_field.items():
-            if cumulative:
+            if qty in DERIVED:
+                # Both halves of the field: its station for the demand, its soil probe
+                # for the supply. `met_source`/`soil_source` prefer the same field, so
+                # this is the same pairing the Explore tabs use.
+                base = field_loggers[fname][0]
+                station, probe = w.met_source(base), w.soil_source(base)
+                if station is None or probe is None:
+                    notes.append(f"{fname}: no "
+                                 + ("weather station" if station is None else "soil probe"))
+                    continue
+                met_d = (frames[station.name] if station.name in frames
+                         else load(station.serial, st.session_state.token))
+                soil_d = (frames[probe.name] if probe.name in frames
+                          else load(probe.serial, st.session_state.token))
+                try:
+                    out = w.stress.actual_et(soil_d, met_d, ref=probe.serial)
+                except (FileNotFoundError, ValueError) as exc:
+                    notes.append(f"{fname}: {str(exc).split('.')[0]}")
+                    continue
+                if out.empty:
+                    notes.append(f"{fname}: no overlapping soil and weather record")
+                    continue
+                s_ = {"wsf": out["ks"],
+                      "et_actual": out["et"],
+                      "et_cumulative": w.cumulative_year(out["et"]),
+                      "et0_cumulative": w.cumulative_year(out["et0"])}[qty]
+                notes.append(f"{fname}: soil from {probe.name}, weather from {station.name}")
+            elif cumulative:
                 # Rain and VPD come from the field's own ATMOS-41 station.
                 col = (w.plot.PRECIP if qty == "precip_cumulative" else w.plot.VPD)
                 src = next((n for n, d in frames.items()
@@ -224,16 +264,22 @@ if mode == "Compare":
         unit = {"precip_cumulative": "Cumulative precipitation (mm)",
                 "vpd_cumulative": "Cumulative VPD (kPa d)",
                 "moisture": "Root-zone soil moisture (m³ m⁻³)",
-                "temperature": "Root-zone soil temperature (°C)"}[qty]
+                "temperature": "Root-zone soil temperature (°C)",
+                "wsf": "Water stress factor, WSF (—)",
+                "et_actual": "Actual ET (mm d⁻¹)",
+                "et_cumulative": "Cumulative actual ET (mm)",
+                "et0_cumulative": "Cumulative reference ET (mm)"}[qty]
         show(w.plot.compare_series(
             series, ylabel=unit, title=f"{site_.name} — {QUANTITIES[qty]}",
-            ylim=(0, 0.6) if qty == "moisture" else None,
-            fmt=".1f" if cumulative else ".3f"), "fld")
+            ylim=(0, 0.6) if qty == "moisture" else (0, 1.02) if qty == "wsf" else None,
+            fmt=".1f" if cumulative else ".2f" if qty in DERIVED else ".3f"), "fld")
         for g in gaps:
             st.warning(g)
         st.caption(" · ".join(notes) +
-                   ("  ·  Cumulative totals restart on 1 January."
-                    if cumulative else
+                   ("  ·  Each field's own instruments: one soil probe and one station, "
+                    "not a field mean — WSF is defined against the soil under that "
+                    "particular probe." if qty in DERIVED else
+                    "  ·  Cumulative totals restart on 1 January." if cumulative else
                     "  ·  A field is several loggers tens of metres apart; the line is "
                     "their mean."))
 
@@ -649,13 +695,14 @@ with tabs["Summary"]:
         # years, one quantity each. This one is every term of the balance together,
         # against nothing but zero.
         if HAS_STRESS and met_full is not None and soil_full is not None:
-            weeks = st.select_slider("Weeks shown", [13, 26, 52, 104], value=52,
-                                     format_func=lambda n: f"{n} weeks")
+            years_ = sorted(full.index.year.unique(), reverse=True)
+            year_ = (st.radio("Year", years_, horizontal=True, key="wb_year")
+                     if len(years_) > 1 else years_[0])
             show(w.plot.weekly_balance(soil_full, met_full, ref=soil_lg.serial,
-                                       weeks=weeks, logger=lg), "wb")
-            st.caption("Three bars a week: rain, the demand (reference ET) and what "
-                       "actually evaporated. Where the pale bar stands taller than "
-                       "the solid one beside it, the soil could not meet the demand. "
+                                       year=year_, logger=lg), "wb")
+            st.caption("From 1 January, two bars a week: rain, and evaporation with "
+                       "the demand (reference ET) in pale behind what actually "
+                       "evaporated — the exposed pale head *is* the water stress. "
                        "Below, the same weeks as P − ET: blue where the week put "
                        "water into the profile, brown where the store paid for it.")
 

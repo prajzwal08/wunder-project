@@ -40,13 +40,13 @@ import wunder; wunder.update_all()
 
 | Tab | Shows |
 |---|---|
-| **Summary** | Where this year stands today against the same date in previous complete years — cumulative rainfall, reference ET, root-zone soil moisture, water stress factor, actual ET, P − ET₀ and VPD — each with the deviation from normal and a band spanning earlier years. The rainfall, reference-ET and actual-ET panels also carry that year's weekly totals as bars, so you can see *when* the year accumulated and not only how much |
+| **Summary** | Where this year stands today against the same date in previous complete years — cumulative rainfall, reference ET, root-zone soil moisture, water stress factor, actual ET, P − ET₀ and VPD — each with the deviation from normal and a band spanning earlier years. One quantity per panel, one axis per panel. The soil-moisture panel carries field capacity, the stress threshold and wilting point as dotted lines, weighted over the same depths as the curve itself. Last comes the **weekly water balance**, week by week from 1 January: rain beside evaporation, with reference ET pale behind actual ET so the exposed head *is* the water stress, and P − ET as a signed bar beneath — blue where the week put water into the profile, brown where the store paid for it |
 | Soil moisture | By depth, with rainfall bars on a reversed right axis |
 | Root zone | Depth-weighted profile average, trapezoid or layer-weighted |
 | Soil temperature | By depth, with air temperature and a 0 °C line |
 | Water potential | Matric potential against VPD — soil supply vs atmospheric demand. VPD comes from the field's ATMOS-41 station, since the TEROS21 loggers carry no weather sensor |
 | Weather | Rainfall (with cumulative), temperature + radiation, VPD + air temperature |
-| Evapotranspiration | Daily Makkink ET₀ against rainfall on one mm-per-day axis with the running P − ET₀ balance; then actual ET drawn inside the ET₀ bars, so the exposed part *is* the water stress, with Kₛ on the right axis. An expander gives the full method with this logger's own numbers |
+| Evapotranspiration | Daily Makkink ET₀ against rainfall on one mm-per-day axis with the running P − ET₀ balance; then actual ET drawn inside the ET₀ bars, so the exposed part *is* the water stress, with WSF on the right axis. An expander gives the full method with this logger's own numbers |
 | Wind | Wind rose, 16 sectors, ordinal speed bins, calm excluded and reported |
 | Variables | Any column, on demand |
 | Coverage | Heatmap of when each sensor was reporting |
@@ -56,6 +56,10 @@ import wunder; wunder.update_all()
 
 - **Fields at a site** — Glanerbeek F1 vs F2, or Ketelbroek Voedselbos vs Grasveld. Soil
   quantities are the mean of that field's loggers; rain and VPD come from its own station.
+  Also the derived pair, field against field: **water stress factor**, actual ET (daily or
+  cumulative) and cumulative reference ET, each built from that field's own soil probe and
+  its own weather station — named in the caption, since WSF is defined against the soil
+  under one particular probe rather than a field mean.
 - **This year vs previous** — the climatology view for any logger and quantity.
 - **Variables** — several variables from one logger as stacked panels, or overlaid scaled
   0–1 to compare shape.
@@ -90,8 +94,9 @@ fig.show()
 | `w.rzsm`, `w.rzst`, `w.root_zone` | depth-weighted profile averages |
 | `w.reference_et(df)` | daily Makkink reference ET [mm d⁻¹] |
 | `w.water_balance(df)` | daily rainfall, ET₀ and `P − ET₀` |
-| `w.stress.root_zone_stress(df, ref=…)` | FAO-56 water stress factor Kₛ, with its provenance |
-| `w.stress.actual_et(df, ref=…)` | daily ET₀, Kₛ and the water-limited ET they imply |
+| `w.stress.root_zone_stress(df, ref=…)` | FAO-56 water stress factor (WSF), with its provenance |
+| `w.stress.root_zone_limits(df, ref=…)` | just θ_fc, θ_wp and the stress threshold, without computing the series |
+| `w.stress.actual_et(df, ref=…)` | daily ET₀, WSF and the water-limited ET they imply |
 | `w.stress.layer_limits(site)` | θ_fc and θ_wp per SoilGrids layer |
 | `w.met_source(ref)`, `w.soil_source(ref)` | which logger supplies weather / soil water for this one |
 | `w.cumulative_year(s)` | running total that restarts each 1 January |
@@ -206,7 +211,9 @@ Read this before trusting a number.
   days, as KNMI's are. ET₀ is the demand a well-watered *grass* sward would meet — not what
   a food forest actually transpires — and it assumes the pyranometer sees open sky, which
   K1 Voedselbos's canopy-covered mast does not.
-- **The water stress factor is FAO-56's Kₛ**: 1 while the profile still holds readily
+- **The water stress factor is FAO-56's Kₛ**, labelled **WSF** everywhere in the app and
+  figures — `Ks` survives only as a column name in the code, so the FAO-56 notation stays
+  findable. It is 1 while the profile still holds readily
   available water, falling linearly to 0 at the wilting point,
   `Kₛ = (θ − θ_wp) / ((1 − p)(θ_fc − θ_wp))`, clipped to [0, 1]. `p = 0.5` is the
   depletion fraction for deciduous trees and orchards (FAO-56 Table 22).
