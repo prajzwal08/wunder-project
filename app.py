@@ -653,11 +653,11 @@ with tabs["Summary"]:
                                      format_func=lambda n: f"{n} weeks")
             show(w.plot.weekly_balance(soil_full, met_full, ref=soil_lg.serial,
                                        weeks=weeks, logger=lg), "wb")
-            st.caption("Rain up, evaporation down, as weekly totals in mm. The pale "
-                       "part of a downward bar is demand the soil could not meet. "
-                       "Below, the running total of P − ET over the weeks shown: "
-                       "rising means the profile is gaining water, falling means it "
-                       "is paying the difference out of store.")
+            st.caption("Three bars a week: rain, the demand (reference ET) and what "
+                       "actually evaporated. Where the pale bar stands taller than "
+                       "the solid one beside it, the soil could not meet the demand. "
+                       "Below, the same weeks as P − ET: blue where the week put "
+                       "water into the profile, brown where the store paid for it.")
 
 with tabs["Variables"]:
     units = w.units(lg.serial)

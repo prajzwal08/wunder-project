@@ -576,17 +576,16 @@ def weekly_balance(
     p: float = 0.5,
     logger: Logger | str | None = None,
 ) -> go.Figure:
-    """Week by week: rain in, evaporation out, and what the soil was left with.
+    """Week by week: rain, the demand, what evaporated, and what was left over.
 
-    One axis, one unit, one week per bar. Rain goes up, evaporation goes down --
-    reference ET pale for what the atmosphere asked, actual ET solid inside it for
-    what the soil could supply, so the exposed part of the pale bar is the water
-    stress. The line is P - ET, the net the profile actually gained or lost: above
-    zero the store is filling, below it the store is paying for the difference.
+    Top row, three upright bars a week: rain, reference ET (what the atmosphere
+    asked) and actual ET (what the soil could supply). Reading them side by side is
+    the whole point -- the gap between the two ET bars is the water stress, and
+    whether rain clears them is whether the week paid for itself.
 
-    Everything is a weekly total in mm, which is why it can share one axis with a
-    signed quantity -- the cumulative panels cannot, and that is what made them
-    hard to read.
+    Bottom row, one bar a week: P - ET, the net the profile gained or lost. Above
+    zero the store filled, below zero it paid the difference. Its own row because a
+    signed residual and the fluxes it comes from do not belong on one scale.
     """
     from .stress import actual_et
 
@@ -621,41 +620,43 @@ def weekly_balance(
     # hand every later bar the wrong width.
     spans = pd.Series(totals["precip"].attrs["width_days"], index=totals["precip"].index)
     width = spans.reindex(weekly.index).fillna(7).to_numpy() * 0.88 * 86_400_000
-    running = (weekly["precip"] - weekly["et"]).cumsum()
+    balance = weekly["precip"] - weekly["et"]
 
-    # Two rows, one x axis. The fluxes are per-week and the balance is a running total,
-    # which is precisely the pair that must not share a y axis -- so they get a row each
-    # instead of a second scale on the same one.
+    # Two rows, one x axis: three fluxes above, their residual below. A signed residual
+    # on the same axis as the fluxes would spend half the height on nothing.
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
-                        row_heights=[0.64, 0.36], vertical_spacing=0.05)
-    _style(fig, _title(logger, "Weekly water balance"), 520)
+                        row_heights=[0.62, 0.38], vertical_spacing=0.05)
+    _style(fig, _title(logger, "Weekly water balance"), 540)
 
-    fig.add_trace(go.Bar(x=weekly.index, y=weekly["precip"], width=width, name="rain",
-                         marker_color=RAIN, marker_line_width=0,
-                         hovertemplate="%{y:.1f} mm<extra>rain</extra>"), row=1, col=1)
-    fig.add_trace(go.Bar(x=weekly.index, y=-weekly["et0"], width=width,
-                         name="reference ET (demand)",
-                         marker_color=ET0_C, opacity=0.32, marker_line_width=0,
-                         hovertemplate="%{y:.1f} mm<extra>ET<sub>0</sub></extra>"),
-                  row=1, col=1)
-    fig.add_trace(go.Bar(x=weekly.index, y=-weekly["et"], width=width,
-                         name="actual ET (supplied)",
-                         marker_color=ET0_CUM, marker_line_width=0,
-                         hovertemplate="%{y:.1f} mm<extra>ET</extra>"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=weekly.index, y=running, name="running P − ET",
-                             mode="lines", line=dict(color=YEAR_INK, width=2.0),
-                             fill="tozeroy", fillcolor="rgba(13,54,107,0.10)",
-                             hovertemplate="%{y:+.0f} mm<extra>since "
-                                           f"{weekly.index[0]:%d %b %Y}</extra>"),
-                  row=2, col=1)
+    # Three bars abreast, the triple centred on the week they belong to. Explicit
+    # offsets rather than Plotly's grouping, because the widths vary: a part-finished
+    # week is drawn narrow, and grouped bars would then sit off its centre.
+    third = width / 3.0
+    for i, (col, name, colour, opacity) in enumerate((
+            ("precip", "rain", RAIN, 1.0),
+            ("et0", "reference ET (demand)", ET0_C, 0.45),
+            ("et", "actual ET (supplied)", ET0_CUM, 1.0))):
+        fig.add_trace(go.Bar(
+            x=weekly.index, y=weekly[col], width=third,
+            offset=(i - 1.5) * third, name=name,
+            marker_color=colour, opacity=opacity, marker_line_width=0,
+            hovertemplate="%{y:.1f} mm<extra>" + name + "</extra>"), row=1, col=1)
+
+    # One bar, signed: blue where the week put water in, brown where the store paid.
+    # Out of the legend -- a two-colour series has no single swatch, and its one
+    # swatch would collide with the ET bars it is not.
+    fig.add_trace(go.Bar(
+        x=weekly.index, y=balance, width=width, offset=-width / 2, name="P − ET",
+        marker_color=[RAIN_CUM if v >= 0 else ET0_CUM for v in balance],
+        marker_line_width=0, showlegend=False,
+        hovertemplate="%{y:+.1f} mm<extra>P − ET</extra>"), row=2, col=1)
 
     fig.update_layout(barmode="overlay", bargap=0.15)
     for row in (1, 2):
         fig.add_hline(y=0, line=dict(color=INK, width=1), row=row, col=1)
     fig.update_xaxes(showticklabels=False, row=1, col=1)
-    fig.update_yaxes(title_text="mm per week", row=1, col=1)
-    fig.update_yaxes(title_text=f"Running total<br>since {weekly.index[0]:%b %Y} (mm)",
-                     row=2, col=1)
+    fig.update_yaxes(title_text="mm per week", rangemode="tozero", row=1, col=1)
+    fig.update_yaxes(title_text="P − ET<br>(mm per week)", row=2, col=1)
     return fig
 
 
