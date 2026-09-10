@@ -521,9 +521,10 @@ def water_limited_et(
     """Actual ET against reference ET, with the water stress factor behind it.
 
     Two bars a day: what the atmosphere asked (ET0, pale) and what the soil could
-    supply (Ks * Kc * ET0, solid). The gap between them *is* the water stress, so it
-    is drawn as a gap rather than as a third series. The line on the right axis is Ks
-    itself, from 1 (the profile can meet any demand) to 0 (wilting point).
+    supply (WSF * Kc * ET0, solid). The gap between them *is* the water stress, so it
+    is drawn as a gap rather than as a third series. The line on the right axis is the
+    water stress factor itself -- FAO-56 calls it Ks, which the code keeps as a column
+    name; every label the reader sees says WSF -- from 1 (the profile can meet any demand) to 0 (wilting point).
     """
     from .stress import actual_et
 
@@ -552,9 +553,9 @@ def water_limited_et(
     fig.update_layout(barmode="overlay", bargap=0.15)
     fig.update_yaxes(title_text="ET (mm d<sup>-1</sup>)", secondary_y=False)
 
-    fig.add_trace(_line(out.index, out["ks"], "K<sub>s</sub> (stress factor)", RZ,
+    fig.add_trace(_line(out.index, out["ks"], "WSF (water stress factor)", RZ,
                         width=1.6, fmt=".2f"), secondary_y=True)
-    fig.update_yaxes(title_text="K<sub>s</sub> (—)", secondary_y=True, range=[0, 1.05],
+    fig.update_yaxes(title_text="WSF (—)", secondary_y=True, range=[0, 1.05],
                      showgrid=False)
     threshold = 1.0 - p
     fig.add_hline(y=threshold, line=dict(color=AXIS, width=1, dash="dot"),
@@ -620,26 +621,41 @@ def weekly_balance(
     # hand every later bar the wrong width.
     spans = pd.Series(totals["precip"].attrs["width_days"], index=totals["precip"].index)
     width = spans.reindex(weekly.index).fillna(7).to_numpy() * 0.88 * 86_400_000
-    balance = weekly["precip"] - weekly["et"]
+    running = (weekly["precip"] - weekly["et"]).cumsum()
 
-    fig = _panel(_title(logger, "Weekly water balance"), 470)
+    # Two rows, one x axis. The fluxes are per-week and the balance is a running total,
+    # which is precisely the pair that must not share a y axis -- so they get a row each
+    # instead of a second scale on the same one.
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                        row_heights=[0.64, 0.36], vertical_spacing=0.05)
+    _style(fig, _title(logger, "Weekly water balance"), 520)
+
     fig.add_trace(go.Bar(x=weekly.index, y=weekly["precip"], width=width, name="rain",
                          marker_color=RAIN, marker_line_width=0,
-                         hovertemplate="%{y:.1f} mm<extra>rain</extra>"))
+                         hovertemplate="%{y:.1f} mm<extra>rain</extra>"), row=1, col=1)
     fig.add_trace(go.Bar(x=weekly.index, y=-weekly["et0"], width=width,
                          name="reference ET (demand)",
                          marker_color=ET0_C, opacity=0.32, marker_line_width=0,
-                         hovertemplate="%{y:.1f} mm<extra>ET<sub>0</sub></extra>"))
+                         hovertemplate="%{y:.1f} mm<extra>ET<sub>0</sub></extra>"),
+                  row=1, col=1)
     fig.add_trace(go.Bar(x=weekly.index, y=-weekly["et"], width=width,
                          name="actual ET (supplied)",
                          marker_color=ET0_CUM, marker_line_width=0,
-                         hovertemplate="%{y:.1f} mm<extra>ET</extra>"))
-    fig.add_trace(go.Scatter(x=weekly.index, y=balance, name="P − ET", mode="lines",
-                             line=dict(color=YEAR_INK, width=2.0),
-                             hovertemplate="%{y:+.1f} mm<extra>P − ET</extra>"))
+                         hovertemplate="%{y:.1f} mm<extra>ET</extra>"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=weekly.index, y=running, name="running P − ET",
+                             mode="lines", line=dict(color=YEAR_INK, width=2.0),
+                             fill="tozeroy", fillcolor="rgba(13,54,107,0.10)",
+                             hovertemplate="%{y:+.0f} mm<extra>since "
+                                           f"{weekly.index[0]:%d %b %Y}</extra>"),
+                  row=2, col=1)
+
     fig.update_layout(barmode="overlay", bargap=0.15)
-    fig.add_hline(y=0, line=dict(color=INK, width=1))
-    fig.update_yaxes(title_text="mm per week")
+    for row in (1, 2):
+        fig.add_hline(y=0, line=dict(color=INK, width=1), row=row, col=1)
+    fig.update_xaxes(showticklabels=False, row=1, col=1)
+    fig.update_yaxes(title_text="mm per week", row=1, col=1)
+    fig.update_yaxes(title_text=f"Running total<br>since {weekly.index[0]:%b %Y} (mm)",
+                     row=2, col=1)
     return fig
 
 
@@ -861,27 +877,6 @@ def compare_variables(
 # -- year on year -----------------------------------------------------------
 
 
-def _weekly_from_cumulative(cum: pd.Series, freq: str = "1W") -> pd.Series:
-    """Weekly increments of a running total -- i.e. the weekly total itself.
-
-    Differencing the cumulative curve rather than re-deriving from the raw frame means
-    a bar can never drift out of step with the line drawn above it.
-
-    Indexed at the **middle of the days each bar actually covers**, not at the bin
-    label. pandas stamps a weekly bin with the Sunday that *ends* it, so drawing bars
-    at the label puts every one of them up to seven days right of the week it
-    summarises -- and puts the current, part-finished week past the "today" marker,
-    which is where it was first noticed. `attrs["width_days"]` is how many days each
-    bar spans, so an unfinished week can be drawn narrow instead of reading as a quiet
-    one.
-    """
-    if cum.empty:
-        return cum
-    step = cum.diff()
-    step.iloc[0] = cum.iloc[0]
-    return _weekly_total(step, freq)
-
-
 def _weekly_total(step: pd.Series, freq: str = "1W") -> pd.Series:
     """Sum a daily series into weeks, indexed at the middle of the days each covers."""
     step = step.dropna()
@@ -975,7 +970,7 @@ CLIMATOLOGY_KINDS = {
     "precip_cumulative": "Cumulative precipitation",
     "et0_cumulative": "Cumulative reference ET",
     "rzsm": "Root-zone soil moisture",
-    "ks": "Water stress factor",
+    "ks": "Water stress factor (WSF)",
     "et_cumulative": "Cumulative actual ET",
     "balance_cumulative": "Cumulative P − ET₀",
     "vpd_cumulative": "Cumulative vapour pressure deficit",
@@ -989,20 +984,6 @@ MET_KINDS = {"precip_cumulative", "et0_cumulative", "balance_cumulative",
 #: Kinds that also need the site's soil parameters, so they need a `ref` to look the
 #: site up and are skipped when it is missing or the site has not been extracted.
 SOIL_KINDS = {"et_cumulative", "ks"}
-
-#: Cumulative kinds whose weekly increments are worth drawing as bars beneath the
-#: running total: (colour, noun). Two years can reach the same total by very different
-#: routes, and the bars are what show which. Signed or non-mm kinds are left out --
-#: balance_cumulative crosses zero and vpd_cumulative is not a depth of water.
-#: (colour, axis noun, legend label). The legend sits in one horizontal row above the
-#: plot alongside the range band, the median and the current year, so the bar labels are
-#: kept short -- "2026 weekly reference ET" pushed the row past the plot width.
-BAR_KINDS = {
-    "precip_cumulative": (RAIN, "rainfall", "weekly rain"),
-    "et0_cumulative": (ET0_C, "reference ET", "weekly ET<sub>0</sub>"),
-    "et_cumulative": (ET0_CUM, "actual ET", "weekly ET"),
-}
-
 
 #: A column has to be genuinely instrumented, not merely non-empty, to drive a plot.
 #: z6-21179 carries 92 weather records from a sensor attached for one day in 2023 and
@@ -1059,7 +1040,7 @@ def _climatology_series(df: pd.DataFrame, kind: str, freq: str,
         return daily.groupby(daily.index.year).cumsum(), ylab, True
 
     if kind in ("et_cumulative", "ks"):
-        # Both come from the same pair -- the station's ET0 and the soil's Ks -- so
+        # Both come from the same pair -- the station's ET0 and the soil's WSF -- so
         # they are computed together and the kind only picks which one to return.
         # Needs the site's soil parameters, hence `ref`.
         if ref is None or not (_has_data(wx, RADIATION) and _has_data(wx, AIR_T)):
@@ -1080,7 +1061,7 @@ def _climatology_series(df: pd.DataFrame, kind: str, freq: str,
         if kind == "ks":
             # A state, not an accumulation: 1 means the profile can meet whatever the
             # atmosphere asks, 0 means it is at wilting point.
-            return daily_ks.dropna(), "Water stress factor K<sub>s</sub> (—)", False
+            return daily_ks.dropna(), "Water stress factor, WSF (—)", False
 
         actual = (et0 * daily_ks).dropna()
         if actual.empty:
@@ -1210,16 +1191,14 @@ def climatology(
     logger: Logger | str | None = None,
     measure: str | None = None,
     ref: str | None = None,
-    bars: bool = False,
     met: pd.DataFrame | None = None,
     soil: pd.DataFrame | None = None,
 ) -> go.Figure:
     """This year against the spread of previous years, on a common calendar.
 
-    `bars=True` adds the current year's actual precipitation as bars on a right-hand
-    axis, under the cumulative curves. Only meaningful for `precip_cumulative`, where
-    it shows *when* the year's rain fell rather than only how much has accumulated --
-    two years can reach the same total by very different routes.
+    One line, one axis, one quantity. The weekly totals that used to ride a second
+    axis here live in `weekly_balance`, where rain and evaporation share a single mm
+    scale instead of a running total being read against a per-week one.
 
     The shaded band is the min-max envelope of every earlier year and the pale line their
     median, so the current year can be read as wetter or drier, ahead or behind, relative to
@@ -1258,56 +1237,7 @@ def climatology(
         return _panel(_title(logger, f"{title} — no complete earlier year to compare"), 320)
 
     past, now = s[s.index.year < newest], s[s.index.year == newest]
-    with_bars = bars and kind in BAR_KINDS and not now.empty
-    fig = _panel(_title(logger, f"{title} — {newest} vs previous years"), 470,
-                 secondary=with_bars)
-    if with_bars:
-        colour, what, legend_label = BAR_KINDS[kind]
-        # Weekly, not daily: a full year of daily bars is 365 marks behind a line that is
-        # the point of the figure. Weekly totals keep the wet and dry spells legible.
-        stack = []
-        axis_label = f"Weekly {what} (mm)"
-        if kind == "et_cumulative":
-            # Reference ET drawn pale behind actual ET. Actual can never exceed
-            # reference, so overlaid bars leave the shortfall visible as the exposed
-            # part of the pale bar -- and that shortfall *is* the water stress.
-            try:
-                demand, _, _ = _climatology_series(df, "et0_cumulative", freq,
-                                                   ref, met, soil)
-            except ValueError:
-                demand = pd.Series(dtype="float64")
-            if not demand.empty:
-                demand = demand[demand.index.year == newest]
-            if not demand.empty:
-                stack.append((_weekly_from_cumulative(demand), ET0_C,
-                              BAR_KINDS["et0_cumulative"][2], 0.30))
-                axis_label = "Weekly ET (mm)"
-        stack.append((_weekly_from_cumulative(now), colour, legend_label, 0.60))
-
-        drawn = False
-        for weekly, bar_colour, label, opacity in stack:
-            if weekly.empty:
-                continue
-            # A bar as wide as the days it covers, in ms. The 0.88 is the gap between
-            # bars; without an explicit width Plotly gives the part-finished last week
-            # the same width as a whole one, which is the same lie the misplaced label
-            # was telling.
-            span = weekly.attrs.get("width_days")
-            width = None if span is None else span * 0.88 * 86_400_000
-            fig.add_trace(go.Bar(
-                x=_common_calendar(weekly.index), y=weekly.values, width=width,
-                name=label, marker_color=bar_colour,
-                marker_line_width=0, opacity=opacity,
-                hovertemplate="%{y:.1f} mm<extra>week</extra>"), secondary_y=True)
-            drawn = True
-        if drawn:
-            fig.update_layout(barmode="overlay")
-            # Each axis titled in the colour of what it measures. Both sides are mm and
-            # both are the same substance -- a running total on the left, a week's worth
-            # on the right -- so words alone leave the reader matching by scale.
-            fig.update_yaxes(title_text=axis_label, secondary_y=True,
-                             showgrid=False, rangemode="tozero",
-                             title_font=dict(color=colour), tickfont=dict(color=colour))
+    fig = _panel(_title(logger, f"{title} — {newest} vs previous years"), 470)
     if dropped:
         fig.add_annotation(
             text=f"{', '.join(str(y) for y in dropped)} excluded — incomplete year",
@@ -1345,20 +1275,9 @@ def climatology(
                   annotation_text="today", annotation_position="top",
                   annotation_font=dict(family=FONT, size=FS_NOTE, color=MUTED))
     fig.update_xaxes(tickformat="%b", dtick="M1")
-    # `secondary_y=False` is load-bearing: without it this call also retitles the
-    # right-hand axis, so a panel with bars ended up labelled "Cumulative
-    # precipitation (mm)" on *both* sides, over two different scales.
-    # Both axes anchored at zero, so the bars stand on the same baseline the line is
-    # measured from. Left to autorange they do not: the bars' zero sits a little below
-    # the cumulative axis's zero and short weeks appear to hang below it, which reads
-    # as negative rainfall.
-    axis = dict(secondary_y=False, rangemode="tozero") if with_bars else {}
     fig.update_yaxes(title_text=ylab,
                      range=[0, 0.6] if kind == "rzsm"
-                     else [0, 1.02] if kind == "ks" else None,
-                     title_font=dict(color=YEAR_INK) if with_bars else None,
-                     tickfont=dict(color=YEAR_INK) if with_bars else None,
-                     **axis)
+                     else [0, 1.02] if kind == "ks" else None)
     if kind == "rzsm":
         # The two lines that turn a moisture curve into a statement about the plants:
         # water is held between them, and nothing below the lower one is available.

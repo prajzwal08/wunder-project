@@ -487,19 +487,20 @@ if "Evapotranspiration" in tabs:
             show(w.plot.water_limited_et(soil_win, met=met_win,
                                          ref=soil_lg.serial, logger=lg), "aet")
             a1, a2, a3 = st.columns(3)
-            a1.metric("Mean K\u209b", f"{aet.ks.mean():.2f}",
-                      help="1 = the soil can meet any demand; 0 = wilting point.")
+            a1.metric("Mean WSF", f"{aet.ks.mean():.2f}",
+                      help="Water stress factor: 1 = the soil can meet any demand; 0 = wilting point.")
             a2.metric("Actual ET", f"{aet.et.sum():,.0f} mm")
             a3.metric("Demand met", f"{100 * aet.et.sum() / aet.et0.sum():.0f}%",
                       help="Actual ET as a share of reference ET over the period shown.")
             st.caption(
-                f"**K\u209b** is the FAO-56 water stress coefficient. \u03b8_fc = "
+                f"**WSF**, the FAO-56 water stress coefficient ($K_s$), is 1 while the "
+                f"profile still holds readily available water and 0 at wilting point. \u03b8_fc = "
                 f"{aet.attrs['theta_fc']:.3f} and \u03b8_wp = {aet.attrs['theta_wp']:.3f} "
                 f"m\u00b3 m\u207b\u00b3 come from the van Genuchten curve the model runs "
                 f"on \u2014 SoilGrids texture through Rosetta pedotransfer \u2014 read at "
                 f"\u221233 and \u22121500 kPa over depths "
                 f"{', '.join(aet.attrs['depths'])} cm at {aet.attrs['site']}. Actual ET is "
-                f"K\u209b \u00d7 ET\u2080 with K\u1d9c = 1: no claim is made about how a "
+                f"WSF \u00d7 ET\u2080 with K\u1d9c = 1: no claim is made about how a "
                 f"food forest differs from the reference grass."
             )
         with st.expander("How these are calculated"):
@@ -524,7 +525,7 @@ if "Evapotranspiration" in tabs:
             if aet is not None and not aet.empty:
                 a = aet.attrs
                 st.markdown(
-                    "#### 2 · Water stress factor $K_s$ (FAO-56)\n"
+                    "#### 2 · Water stress factor, WSF (FAO-56)\n"
                     "**Step 1 — root-zone soil moisture $\\theta$.** This logger's live "
                     f"depths ({', '.join(a['depths'])} cm) are combined by the same "
                     "thickness weighting the *Root zone* tab uses, with layer boundaries "
@@ -535,7 +536,7 @@ if "Evapotranspiration" in tabs:
                     "pedotransfer — evaluated at −33 kPa and −1500 kPa:\n"
                     "$$\\theta(h) = \\theta_r + \\frac{\\theta_s - \\theta_r}"
                     "{[1 + (\\alpha h)^n]^{1-1/n}}$$\n"
-                    "Using the model's own soil is deliberate: $K_s \\cdot ET_0$ and the "
+                    "Using the model's own soil is deliberate: $\\mathrm{WSF} \\cdot ET_0$ and the "
                     "model's transpiration then rest on the same soil, so a disagreement "
                     "between them means something.\n\n"
                     "**Step 3 — collapse the limits with the *same* weights.** The "
@@ -547,10 +548,10 @@ if "Evapotranspiration" in tabs:
                     f"* stress begins at $\\theta$ = **{a['threshold']:.4f}** "
                     f"($\\theta_{{fc}} - p\\cdot$TAW)\n\n"
                     "Weighting $\\theta$ one way and its limits another would make "
-                    "\"$K_s=1$\" mean this profile is at field capacity while the limits "
+                    "\"WSF = 1\" mean this profile is at field capacity while the limits "
                     "described some other average.\n\n"
                     "**Step 4 — the ratio, clipped to [0, 1]:**\n"
-                    "$$K_s = \\frac{\\theta - \\theta_{wp}}"
+                    "$$\\mathrm{WSF} = \\frac{\\theta - \\theta_{wp}}"
                     "{(1-p)\\,(\\theta_{fc} - \\theta_{wp})}$$\n"
                     f"$p$ = **{a['p']}** is the depletion fraction, FAO-56 Table 22 for "
                     "deciduous trees and orchards — the share of available water taken "
@@ -558,7 +559,7 @@ if "Evapotranspiration" in tabs:
                     "threshold the formula exceeds 1 and is clipped; below the wilting "
                     "point it goes negative and is clipped to 0.\n\n"
                     "#### 3 · Actual ET\n"
-                    f"$ET = K_s \\cdot K_c \\cdot ET_0$, with $K_c$ = "
+                    f"$ET = \\mathrm{{WSF}} \\cdot K_c \\cdot ET_0$, with $K_c$ = "
                     f"**{a['crop_coefficient']:g}**. No claim is made about how a food "
                     "forest's canopy differs from the reference grass: $K_c$ for this "
                     "vegetation is unknown, and inventing one would bury a guess inside a "
@@ -638,25 +639,25 @@ with tabs["Summary"]:
                 + (f" {', '.join(str(y) for y in ref['excluded'])} excluded — incomplete."
                    if ref["excluded"] else "")
             )
-        # In and out on one axis, one week at a time. The cumulative panels below
-        # answer "where does the year stand"; this one answers "what happened", which
-        # a running total cannot show without a second scale to be confused with.
+        if not kinds:
+            st.info("This logger has neither soil moisture nor a weather station.")
+        for k in kinds:
+            show(w.plot.climatology(full, kind=k, logger=lg, ref=ref_serial,
+                                    met=met_full, soil=soil_full), f"cl{k}")
+
+        # Last, and on its own terms: the panels above are this year against other
+        # years, one quantity each. This one is every term of the balance together,
+        # against nothing but zero.
         if HAS_STRESS and met_full is not None and soil_full is not None:
             weeks = st.select_slider("Weeks shown", [13, 26, 52, 104], value=52,
                                      format_func=lambda n: f"{n} weeks")
             show(w.plot.weekly_balance(soil_full, met_full, ref=soil_lg.serial,
                                        weeks=weeks, logger=lg), "wb")
-            st.caption("Rain up, evaporation down, both as weekly totals in mm. The "
-                       "pale part of a downward bar is demand the soil could not "
-                       "meet. The line is P − ET: above zero the profile gained "
-                       "water that week, below zero it paid the difference out of "
-                       "store.")
-
-        if not kinds:
-            st.info("This logger has neither soil moisture nor a weather station.")
-        for k in kinds:
-            show(w.plot.climatology(full, kind=k, logger=lg, ref=ref_serial,
-                                    met=met_full, soil=soil_full, bars=True), f"cl{k}")
+            st.caption("Rain up, evaporation down, as weekly totals in mm. The pale "
+                       "part of a downward bar is demand the soil could not meet. "
+                       "Below, the running total of P − ET over the weeks shown: "
+                       "rising means the profile is gaining water, falling means it "
+                       "is paying the difference out of store.")
 
 with tabs["Variables"]:
     units = w.units(lg.serial)
