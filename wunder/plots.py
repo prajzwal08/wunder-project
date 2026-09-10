@@ -50,6 +50,14 @@ MAX_SERIES = len(SERIES)
 
 RAIN = "#7fa9d8"
 AIR = "#d03b3b"
+# Soil water limits drawn behind a moisture curve -- field capacity and wilting point,
+# with the stress threshold between them in a lighter tint because it is derived from a
+# chosen depletion fraction, not read off the retention curve.
+LIMIT = "#c0392b"
+LIMIT_SOFT = "#e08a80"
+# The current year in a climatology panel, and its axis when a second axis shares the
+# panel with it.
+YEAR_INK = "#0d366b"
 RAD = "#eda100"
 VPD_C = "#1baf7a"
 RZ = "#6a3d9a"
@@ -780,12 +788,31 @@ def _weekly_from_cumulative(cum: pd.Series, freq: str = "1W") -> pd.Series:
 
     Differencing the cumulative curve rather than re-deriving from the raw frame means
     a bar can never drift out of step with the line drawn above it.
+
+    Indexed at the **middle of the days each bar actually covers**, not at the bin
+    label. pandas stamps a weekly bin with the Sunday that *ends* it, so drawing bars
+    at the label puts every one of them up to seven days right of the week it
+    summarises -- and puts the current, part-finished week past the "today" marker,
+    which is where it was first noticed. `attrs["width_days"]` is how many days each
+    bar spans, so an unfinished week can be drawn narrow instead of reading as a quiet
+    one.
     """
     if cum.empty:
         return cum
     step = cum.diff()
     step.iloc[0] = cum.iloc[0]
-    return step.resample(freq).sum(min_count=1).dropna()
+    step = step.dropna()
+    if step.empty:
+        return step
+
+    total = step.resample(freq).sum(min_count=1)
+    when = pd.Series(step.index, index=step.index).resample(freq)
+    first, last = when.min(), when.max()
+    keep = total.notna() & first.notna()
+    out = pd.Series(total[keep].to_numpy(),
+                    index=pd.DatetimeIndex(first[keep] + (last[keep] - first[keep]) / 2))
+    out.attrs["width_days"] = ((last[keep] - first[keep]).dt.days + 1).to_numpy()
+    return out
 
 
 def _common_calendar(idx: pd.DatetimeIndex) -> pd.DatetimeIndex:
@@ -1054,11 +1081,16 @@ def climatology_standing(df: pd.DataFrame, kind: str, *, freq: str = "1D",
 
 def _add_soil_limits(fig: go.Figure, df: pd.DataFrame,
                      ref: Logger | str | None) -> dict:
-    """Dotted field-capacity and wilting-point lines behind a root-zone moisture chart.
+    """Dotted field capacity, stress onset and wilting point behind a moisture chart.
 
     Weighted over the same depths, by the same method, as the moisture series itself
     (`stress.root_zone_limits`), so the curve and the lines are commensurable -- a
-    curve touching the lower line really is this profile at wilting point.
+    curve touching the lowest line really is this profile at wilting point.
+
+    Three lines, not two: the pair of soil bounds says what the soil can hold, and the
+    one between them says where the plants start to feel it, which is the reading the
+    curve is usually being interrogated for. It is drawn paler because it is derived
+    from a chosen depletion fraction rather than measured off the retention curve.
 
     Silent when the site's soil parameters are missing: the moisture curve is still
     worth showing without them. Returns the limits it drew, or `{}`.
@@ -1073,13 +1105,17 @@ def _add_soil_limits(fig: go.Figure, df: pd.DataFrame,
         return {}
     if not info:
         return {}
-    for key, label in (("theta_fc", "field capacity"), ("theta_wp", "wilting point")):
-        # Labelled inside the plot, top left: on the right the text runs into the
-        # margin and the value gets clipped.
-        fig.add_hline(y=info[key], line=dict(color=AXIS, width=1, dash="dot"),
+    lines = (("theta_fc", "field capacity", LIMIT),
+             ("threshold", f"stress begins (p = {info['p']:g})", LIMIT_SOFT),
+             ("theta_wp", "wilting point", LIMIT))
+    for key, label, colour in lines:
+        # Labelled at the right, inside the plot: the curve's own year runs out at
+        # "today", so the right-hand months are the empty part of the panel. Outside
+        # the axis the text would be clipped by the margin.
+        fig.add_hline(y=info[key], line=dict(color=colour, width=1, dash="dot"),
                       annotation_text=f"{label} {info[key]:.3f}",
-                      annotation_position="top left",
-                      annotation_font=dict(family=FONT, size=FS_NOTE, color=MUTED))
+                      annotation_position="top right",
+                      annotation_font=dict(family=FONT, size=FS_NOTE, color=colour))
     return info
 
 
@@ -1169,16 +1205,26 @@ def climatology(
         for weekly, bar_colour, label, opacity in stack:
             if weekly.empty:
                 continue
+            # A bar as wide as the days it covers, in ms. The 0.88 is the gap between
+            # bars; without an explicit width Plotly gives the part-finished last week
+            # the same width as a whole one, which is the same lie the misplaced label
+            # was telling.
+            span = weekly.attrs.get("width_days")
+            width = None if span is None else span * 0.88 * 86_400_000
             fig.add_trace(go.Bar(
-                x=_common_calendar(weekly.index), y=weekly.values,
+                x=_common_calendar(weekly.index), y=weekly.values, width=width,
                 name=label, marker_color=bar_colour,
                 marker_line_width=0, opacity=opacity,
                 hovertemplate="%{y:.1f} mm<extra>week</extra>"), secondary_y=True)
             drawn = True
         if drawn:
             fig.update_layout(barmode="overlay")
+            # Each axis titled in the colour of what it measures. Both sides are mm and
+            # both are the same substance -- a running total on the left, a week's worth
+            # on the right -- so words alone leave the reader matching by scale.
             fig.update_yaxes(title_text=axis_label, secondary_y=True,
-                             showgrid=False, rangemode="tozero")
+                             showgrid=False, rangemode="tozero",
+                             title_font=dict(color=colour), tickfont=dict(color=colour))
     if dropped:
         fig.add_annotation(
             text=f"{', '.join(str(y) for y in dropped)} excluded — incomplete year",
@@ -1201,12 +1247,12 @@ def climatology(
     if len(now):
         x = pd.to_datetime(now.index.dayofyear - 1, unit="D",
                            origin=pd.Timestamp("2000-01-01"))
-        fig.add_trace(_line(x, now.values, str(newest), "#0d366b", width=2.2,
+        fig.add_trace(_line(x, now.values, str(newest), YEAR_INK, width=2.2,
                             fmt=".1f" if cumulative else ".3f"))
         # Where the year currently stands, called out rather than left to the axis.
         fig.add_trace(go.Scatter(
             x=[x[-1]], y=[now.values[-1]], mode="markers", showlegend=False,
-            marker=dict(color="#0d366b", size=7, line=dict(color=SURFACE, width=1.5)),
+            marker=dict(color=YEAR_INK, size=7, line=dict(color=SURFACE, width=1.5)),
             hovertemplate="%{y:.1f}<extra>latest</extra>" if cumulative
             else "%{y:.3f}<extra>latest</extra>"))
 
@@ -1216,9 +1262,20 @@ def climatology(
                   annotation_text="today", annotation_position="top",
                   annotation_font=dict(family=FONT, size=FS_NOTE, color=MUTED))
     fig.update_xaxes(tickformat="%b", dtick="M1")
+    # `secondary_y=False` is load-bearing: without it this call also retitles the
+    # right-hand axis, so a panel with bars ended up labelled "Cumulative
+    # precipitation (mm)" on *both* sides, over two different scales.
+    # Both axes anchored at zero, so the bars stand on the same baseline the line is
+    # measured from. Left to autorange they do not: the bars' zero sits a little below
+    # the cumulative axis's zero and short weeks appear to hang below it, which reads
+    # as negative rainfall.
+    axis = dict(secondary_y=False, rangemode="tozero") if with_bars else {}
     fig.update_yaxes(title_text=ylab,
                      range=[0, 0.6] if kind == "rzsm"
-                     else [0, 1.02] if kind == "ks" else None)
+                     else [0, 1.02] if kind == "ks" else None,
+                     title_font=dict(color=YEAR_INK) if with_bars else None,
+                     tickfont=dict(color=YEAR_INK) if with_bars else None,
+                     **axis)
     if kind == "rzsm":
         # The two lines that turn a moisture curve into a statement about the plants:
         # water is held between them, and nothing below the lower one is available.
