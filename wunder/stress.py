@@ -201,7 +201,7 @@ def _depth_of(column: str) -> str:
     return column.split()[-1].removesuffix("cm")
 
 
-def root_zone_stress(
+def root_zone_limits(
     df: pd.DataFrame,
     *,
     site: str | None = None,
@@ -211,17 +211,15 @@ def root_zone_stress(
     method: str = "trapezoid",
     min_coverage: float = 0.9,
     max_depth_cm: float = MAX_DEPTH_CM,
-) -> tuple[pd.Series, dict]:
-    """Root-zone Ks through time, with the provenance of the numbers behind it.
+) -> dict:
+    """This profile's own theta_fc, theta_wp and stress threshold [m3 m-3].
 
-    Give either `site` (a forcing code like 'NL-Gl1') or `ref` (a logger name or
-    serial, from which the site is looked up).
+    The three numbers a root-zone moisture series should be read against, on the same
+    weighting as the series itself. `{}` when the frame carries no usable moisture.
 
-    The profile's theta_fc and theta_wp are depth-weighted with *the same* weights,
-    columns and method as the soil moisture itself -- by running the limits back
-    through `process.root_zone` rather than re-deriving a weighting here. That is
-    what keeps "Ks = 1" meaning *this* profile is at field capacity, rather than
-    some other average of some other set of depths.
+    Separated from `root_zone_stress` because a figure often wants only the limits --
+    two horizontal lines behind a moisture curve -- and computing Ks over a
+    quarter-million rows to get them would be waste.
     """
     if site is None:
         if ref is None:
@@ -235,13 +233,12 @@ def root_zone_stress(
     # Nothing below the profile the soil file describes.
     cols = [c for c in cols if float(_depth_of(c)) <= max_depth_cm]
     if not cols:
-        return pd.Series(dtype="float64", name="Ks"), {"reason": "no soil moisture"}
+        return {}
 
     if limits is None:
         limits = water_limits(site, [_depth_of(c) for c in cols],
                               max_depth_cm=max_depth_cm)
 
-    theta = root_zone(df, "moisture", method=method, columns=cols)
     bounds = pd.DataFrame(
         [[limits[_depth_of(c)]["theta_fc"] for c in cols],
          [limits[_depth_of(c)]["theta_wp"] for c in cols]],
@@ -249,10 +246,9 @@ def root_zone_stress(
     )
     weighted = root_zone(bounds, "moisture", method=method, columns=cols)
     theta_fc, theta_wp = float(weighted.iloc[0]), float(weighted.iloc[1])
-
-    ks = stress_factor(theta, theta_fc, theta_wp, p).rename("Ks")
-    return ks.dropna(), {
+    return {
         "site": site,
+        "columns": cols,
         "depths": [_depth_of(c) for c in cols],
         "theta_fc": theta_fc,
         "theta_wp": theta_wp,
@@ -263,6 +259,33 @@ def root_zone_stress(
         "source": "soilgrids",
         "limits": {_depth_of(c): limits[_depth_of(c)] for c in cols},
     }
+
+
+def root_zone_stress(
+    df: pd.DataFrame,
+    *,
+    p: float = DEFAULT_P,
+    method: str = "trapezoid",
+    **kw,
+) -> tuple[pd.Series, dict]:
+    """Root-zone Ks through time, with the provenance of the numbers behind it.
+
+    Give either `site` (a forcing code like 'NL-Gl1') or `ref` (a logger name or
+    serial, from which the site is looked up).
+
+    The profile's theta_fc and theta_wp are depth-weighted with *the same* weights,
+    columns and method as the soil moisture itself -- by running the limits back
+    through `process.root_zone` rather than re-deriving a weighting here. That is
+    what keeps "Ks = 1" meaning *this* profile is at field capacity, rather than
+    some other average of some other set of depths.
+    """
+    info = root_zone_limits(df, p=p, method=method, **kw)
+    if not info:
+        return pd.Series(dtype="float64", name="Ks"), {"reason": "no soil moisture"}
+
+    theta = root_zone(df, "moisture", method=method, columns=info["columns"])
+    ks = stress_factor(theta, info["theta_fc"], info["theta_wp"], p).rename("Ks")
+    return ks.dropna(), info
 
 
 def actual_et(

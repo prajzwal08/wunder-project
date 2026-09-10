@@ -1052,6 +1052,37 @@ def climatology_standing(df: pd.DataFrame, kind: str, *, freq: str = "1D",
     }
 
 
+def _add_soil_limits(fig: go.Figure, df: pd.DataFrame,
+                     ref: Logger | str | None) -> dict:
+    """Dotted field-capacity and wilting-point lines behind a root-zone moisture chart.
+
+    Weighted over the same depths, by the same method, as the moisture series itself
+    (`stress.root_zone_limits`), so the curve and the lines are commensurable -- a
+    curve touching the lower line really is this profile at wilting point.
+
+    Silent when the site's soil parameters are missing: the moisture curve is still
+    worth showing without them. Returns the limits it drew, or `{}`.
+    """
+    if ref is None:
+        return {}
+    from .stress import root_zone_limits
+
+    try:
+        info = root_zone_limits(df, ref=_ref_name(ref))
+    except (FileNotFoundError, ValueError):
+        return {}
+    if not info:
+        return {}
+    for key, label in (("theta_fc", "field capacity"), ("theta_wp", "wilting point")):
+        # Labelled inside the plot, top left: on the right the text runs into the
+        # margin and the value gets clipped.
+        fig.add_hline(y=info[key], line=dict(color=AXIS, width=1, dash="dot"),
+                      annotation_text=f"{label} {info[key]:.3f}",
+                      annotation_position="top left",
+                      annotation_font=dict(family=FONT, size=FS_NOTE, color=MUTED))
+    return info
+
+
 def climatology(
     df: pd.DataFrame,
     *,
@@ -1188,6 +1219,11 @@ def climatology(
     fig.update_yaxes(title_text=ylab,
                      range=[0, 0.6] if kind == "rzsm"
                      else [0, 1.02] if kind == "ks" else None)
+    if kind == "rzsm":
+        # The two lines that turn a moisture curve into a statement about the plants:
+        # water is held between them, and nothing below the lower one is available.
+        _add_soil_limits(fig, soil if soil is not None else df,
+                         ref if ref is not None else logger)
     if kind == "balance_cumulative":
         # This one crosses zero, and which side of it the year sits on is the reading.
         fig.add_hline(y=0, line=dict(color=AXIS, width=1, dash="dot"))
