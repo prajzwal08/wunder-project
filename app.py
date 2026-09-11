@@ -24,6 +24,10 @@ st.markdown(
     """
     <style>
       #MainMenu, footer, header {visibility: hidden;}
+      /* ...but the arrow that re-opens a collapsed sidebar lives inside that header, so
+         put it back: hiding it strands the user with no way to get the controls back. */
+      header [data-testid="stExpandSidebarButton"],
+      header [data-testid="stExpandSidebarButton"] * {visibility: visible;}
       .block-container {padding-top: 2rem; padding-bottom: 2rem; max-width: 1550px;}
       html, body, [class*="css"] {font-family: "Times New Roman", Times, Georgia, serif;}
       h1 {font-size: 1.6rem; font-weight: 600; margin-bottom: 0.1rem;}
