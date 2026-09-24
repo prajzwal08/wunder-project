@@ -85,6 +85,26 @@ HAS_PUBLISHED = hasattr(w, "publish") and w.publish.available()
 HAS_STRESS = (hasattr(w, "stress") and hasattr(w, "soil_source")
               and hasattr(w.plot, "SOIL_KINDS"))
 
+# Same trap, one level worse. A git push re-runs this script, but Streamlit keeps
+# already-imported modules in sys.modules, so a new `app.py` can meet a `wunder.plots`
+# that predates it. The `hasattr` guards above no longer catch that: `SOIL_KINDS` is
+# older than the functions below, so a stale module sails past them and then raises
+# AttributeError somewhere deep inside a tab. A sentence saying what to do is a better
+# thing to hand a reader than a traceback.
+_NEEDS = ("water_story", "logger_map", "evapotranspiration", "wsf_explorer",
+          "limit_key", "compact", "BASEMAPS")
+_stale = [n for n in _NEEDS if not hasattr(w.plot, n)]
+if _stale:
+    st.error(
+        "**This deployment is running an older copy of the `wunder` package than "
+        "`app.py` expects** — `wunder.plots` is missing "
+        + ", ".join(f"`{n}`" for n in _stale)
+        + ".\n\nA push alone does not pick up new functions, because the old module "
+          "object survives the redeploy. **Reboot the app** — on Streamlit Community "
+          "Cloud that is *Manage app → Reboot* — and this message goes away."
+    )
+    st.stop()
+
 
 @st.cache_data(show_spinner=False, ttl=3600)
 def load(serial: str, token: int, days: int | None = None) -> pd.DataFrame:
