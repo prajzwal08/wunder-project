@@ -40,13 +40,14 @@ import wunder; wunder.update_all()
 
 | Tab | Shows |
 |---|---|
-| **Summary** | Where this year stands today against the same date in previous complete years — cumulative rainfall, reference ET, root-zone soil moisture, water stress factor, actual ET, P − ET₀ and VPD — each with the deviation from normal and a band spanning earlier years. One quantity per panel, one axis per panel. The soil-moisture panel carries field capacity, the stress threshold and wilting point as dotted lines, weighted over the same depths as the curve itself. Last comes the **weekly water balance**, week by week from 1 January: rain beside evaporation, with reference ET pale behind actual ET so the exposed head *is* the water stress, and P − ET as a signed bar beneath — blue where the week put water into the profile, brown where the store paid for it |
+| **Summary** | Half and half at the top: where this year stands on the left, and on the right a **map** of all 14 loggers on Esri satellite or OpenStreetMap, offline ones greyed rather than hidden — tap a marker to switch to that logger and every tab follows, and neither basemap needs an API key. Below, where this year stands today against the same date in previous complete years — cumulative rainfall, ETo, root-zone soil moisture, water stress factor, ETa, P − ET and VPD — each with the deviation from normal. The P − ET panel carries **both** balances, P − ETo dashed against P − ETa solid and each named at its own line end, because the gap between them is the reading. **Every earlier year is its own faded line**, oldest lightest, with this year always black and bold — no band and no median, because neither is a year you can point at. Click any year's line and it comes forward in orange in every panel at once; hover one to see which year it is, and click it again to let go. A logger with only one year of record still gets its charts, drawn to today. One quantity per panel, one axis per panel. The soil-moisture panel carries saturation, field capacity, the half-stress midpoint and residual water content as dotted lines, weighted over the same depths as the curve itself. Last comes the **weekly water balance**, week by week from 1 January: rain beside evaporation, with ETo pale behind ETa so the exposed head *is* the water stress, and P − ET as a signed bar beneath — blue where the week put water into the profile, brown where the store paid for it |
 | Soil moisture | By depth, with rainfall bars on a reversed right axis |
-| Root zone | Depth-weighted profile average, trapezoid or layer-weighted |
+| Root zone | Thickness-weighted profile average, with the four soil limits behind it |
 | Soil temperature | By depth, with air temperature and a 0 °C line |
 | Water potential | Matric potential against VPD — soil supply vs atmospheric demand. VPD comes from the field's ATMOS-41 station, since the TEROS21 loggers carry no weather sensor |
 | Weather | Rainfall (with cumulative), temperature + radiation, VPD + air temperature |
-| Evapotranspiration | Daily Makkink ET₀ against rainfall on one mm-per-day axis with the running P − ET₀ balance; then actual ET drawn inside the ET₀ bars, so the exposed part *is* the water stress, with WSF on the right axis. An expander gives the full method with this logger's own numbers |
+| Evapotranspiration | Plain-language ETo (reference — what a well-watered grass sward would evaporate) against ETa (actual — what this soil could supply), a Kᶜ slider to play with, and four stacked rows on one x axis with no second y axis anywhere: rain beside evaporation in mm/day with ETo pale behind ETa so the exposed head *is* the water stress; WSF; cumulative ETo against cumulative ETa; and cumulative P − ETo against P − ETa. Measured record at Kᶜ = 1 with nothing to adjust; the method, a live Kᶜ and an irrigation calculator are in the **Understand** tab |
+| **Understand** | Opens with **one picture of the whole chain** — the atmosphere asks, the soil opens a gate, what got through and what did not, the profile it came from and the millimetres that would refill it — with three sliders driving all of it. Under that, folded away: what ETo and ETa are, the stress function with its own sliders, the maths layer by layer, and the record with a live Kᶜ. It is **the only tab with anything to drag** — the data tabs are fixed, so a number read off one of them is always the same number. What ETo and ETa are in plain words; the evapotranspiration figure again with a live Kᶜ, so you can see what a different canopy assumption would do; the WSF curve with sliders on θ, θ_s, θ_fc, θ_r and the steepness, opening on the real soil under this logger; and **an irrigation calculator** — put a soil wetness and a day's demand together and it gives WSF, ETa, the demand the canopy is not getting, the millimetres that would refill the root zone, and how long until stress begins |
 | Wind | Wind rose, 16 sectors, ordinal speed bins, calm excluded and reported |
 | Variables | Any column, on demand |
 | Coverage | Heatmap of when each sensor was reporting |
@@ -56,8 +57,8 @@ import wunder; wunder.update_all()
 
 - **Fields at a site** — Glanerbeek F1 vs F2, or Ketelbroek Voedselbos vs Grasveld. Soil
   quantities are the mean of that field's loggers; rain and VPD come from its own station.
-  Also the derived pair, field against field: **water stress factor**, actual ET (daily or
-  cumulative) and cumulative reference ET, each built from that field's own soil probe and
+  Also the derived pair, field against field: **water stress factor**, ETa (daily or
+  cumulative) and cumulative ETo, each built from that field's own soil probe and
   its own weather station — named in the caption, since WSF is defined against the soil
   under one particular probe rather than a field mean.
 - **This year vs previous** — the climatology view for any logger and quantity.
@@ -92,12 +93,12 @@ fig.show()
 | `w.sensor_status(df)` | per-sensor coverage, first/last reading, still-live flag |
 | `w.active_measures(df)` | what is still reporting near the end of the record |
 | `w.rzsm`, `w.rzst`, `w.root_zone` | depth-weighted profile averages |
-| `w.reference_et(df)` | daily Makkink reference ET [mm d⁻¹] |
-| `w.water_balance(df)` | daily rainfall, ET₀ and `P − ET₀` |
-| `w.stress.root_zone_stress(df, ref=…)` | FAO-56 water stress factor (WSF), with its provenance |
-| `w.stress.root_zone_limits(df, ref=…)` | just θ_fc, θ_wp and the stress threshold, without computing the series |
-| `w.stress.actual_et(df, ref=…)` | daily ET₀, WSF and the water-limited ET they imply |
-| `w.stress.layer_limits(site)` | θ_fc and θ_wp per SoilGrids layer |
+| `w.reference_et(df)` | daily Makkink reference ET, ETo [mm d⁻¹] |
+| `w.water_balance(df)` | daily rainfall, ETo and `P − ETo` |
+| `w.stress.profile_stress(df, ref=…)` | WSF per layer and weighted into one series, with its provenance |
+| `w.stress.root_zone_limits(df, ref=…)` | just θ_sat, θ_fc, the midpoint and θ_r, without computing the series |
+| `w.stress.actual_et(df, ref=…)` | daily ETo, WSF and the ETa they imply |
+| `w.stress.layer_limits(site)` | θ_sat, θ_fc, θ_r and θ_wp per SoilGrids layer |
 | `w.met_source(ref)`, `w.soil_source(ref)` | which logger supplies weather / soil water for this one |
 | `w.cumulative_year(s)` | running total that restarts each 1 January |
 | `w.field_series(frames, measure)` | one series per field, averaged over its loggers |
@@ -190,42 +191,64 @@ Read this before trusting a number.
 ## Method notes
 
 - **Root-zone averages** weight each depth by its layer thickness, boundaries at the
-  midpoints between sensors. Two definitions are available: `trapezoid` (the profile varies
-  linearly between sensors) and `weighted` (each sensor represents its whole layer). They
-  differ by up to ~0.05 m³ m⁻³ here. Sparse depths are dropped so the profile definition
-  stays constant through time.
+  midpoints between sensors, so each sensor stands for the slab around it. A trapezoidal
+  variant — the profile varying linearly between sensors — used to be selectable and was
+  dropped: the two agree to well within the spread between loggers in the same field, and
+  offering the choice implied the difference carried meaning that it does not. Sparse
+  depths are dropped so the profile definition stays constant through time.
 - **A depth-weighted mean of matric potential is refused**, not offered. Soil moisture is
   extensive — water volume adds up, so thickness weighting gives real stored water. Matric
   potential is an intensive state variable: it spans −10 to −1500 kPa, so a linear mean is
   dominated by the wettest layer and understates stress, and a plant extracts from the
   least-negative layer rather than experiencing the profile mean.
-- **Reference ET is Makkink**, `ET₀ = 0.65 · s/(s+γ) · Rs/λ`, from global radiation and air
+- **Reference ET, ETo, is Makkink**, `ETo = 0.65 · s/(s+γ) · Rs/λ`, from global radiation and air
   temperature. It is the Dutch standard — the same quantity KNMI publishes as `EV24` for
   every station in the country, so these numbers are comparable with the national record
   (Glanerbeek gives 541 and 551 mm for 2024 and 2025). Penman–Monteith would also need wind
   at a defined height and would be sensitive to VPD error; in this climate the radiation
   term dominates and the two agree closely for grass. **The coefficient 0.65 is fitted to
-  daily totals**, so ET₀ is computed on whole days only: a day missing more than 10% of its
+  daily totals**, so ETo is computed on whole days only: a day missing more than 10% of its
   readings is dropped rather than averaged from whatever hours happen to be present, since
   radiation over the daylight hours alone is about twice the 24-hour mean. Days are local
-  days, as KNMI's are. ET₀ is the demand a well-watered *grass* sward would meet — not what
+  days, as KNMI's are. ETo is the demand a well-watered *grass* sward would meet — not what
   a food forest actually transpires — and it assumes the pyranometer sees open sky, which
   K1 Voedselbos's canopy-covered mast does not.
-- **The water stress factor is FAO-56's Kₛ**, labelled **WSF** everywhere in the app and
-  figures — `Ks` survives only as a column name in the code, so the FAO-56 notation stays
-  findable. It is 1 while the profile still holds readily
-  available water, falling linearly to 0 at the wilting point,
-  `Kₛ = (θ − θ_wp) / ((1 − p)(θ_fc − θ_wp))`, clipped to [0, 1]. `p = 0.5` is the
-  depletion fraction for deciduous trees and orchards (FAO-56 Table 22).
-  **θ_fc and θ_wp come from the soil STEMMUS_SCOPE itself runs on** — SoilGrids texture
-  through Schaap/Rosetta pedotransfer, assembled by PyStemmusScope — read off the van
-  Genuchten curve at −33 kPa and −1500 kPa, over the top 100 cm. Using the model's own
-  soil is deliberate: `Kₛ · ET₀` and the model's transpiration then rest on the same
-  soil, so a disagreement between them means something. The −33 kPa convention is the
-  model's own, verified by reproducing its `fieldMC` to 0.001 at every layer. The
-  per-depth limits are collapsed to the profile with *the same* weighting as the soil
-  moisture, so "Kₛ = 1" means this profile is at field capacity rather than some other
-  average of some other depths.
+- **The water stress factor, WSF, is a sigmoid in soil water content:**
+
+      WSF(θ) = 1 / (1 + exp[ −k · θ_sat · (θ − (θ_fc + θ_r)/2) ])
+
+  Half stress sits midway between field capacity and residual water content, and θ_sat
+  sets how sharply the curve turns there — a coarse soil, holding more water at
+  saturation, switches over a narrower band than a fine one. `k = 100` is the only free
+  constant and it is dimensionless. On these soils WSF is 0.01–0.11 at residual, 0.5 at
+  the midpoint and 0.90–0.99 at field capacity: it never reaches exactly 1 or 0, so a
+  profile sitting at field capacity reads 0.98, not 1.00. The **Water stress** tab draws
+  the curve with sliders on all four parameters.
+
+  This replaced an FAO-56 `Kₛ`, a straight line from a threshold at `θ_fc − p·TAW` down
+  to zero at the wilting point. Two reasons: FAO-56 needs a depletion fraction `p` that
+  nothing at these sites measures, and it has a hard kink at the threshold that no soil
+  exhibits. Every parameter of the sigmoid comes from the site's own retention curve.
+- **WSF is computed per layer and then weighted, never the other way round.** Each sensor
+  depth gets its own θ_fc, θ_r and θ_sat, its own WSF, and only the resulting factors are
+  thickness-weighted into one profile number. This is not a detail: at `F1_2_SMST2` the
+  summer mean is **0.88** computed per layer against **0.995** computed the other way,
+  because 2.5–10 cm sit at 0.49–0.62 while 80 cm sits at 1.00. Averaging the moisture
+  first lets a wet subsoil hide a bone-dry topsoil before the non-linearity ever sees it.
+
+  The weighting is a modelling choice, not an identity: WSF is an intensive ratio, so
+  unlike stored water it does not add up over a profile. Read it as *the share of
+  root-zone demand the profile can meet, each sensor standing for the slab around it*.
+  The physically right weight is root density, which this network cannot supply.
+- **The soil parameters come from the soil STEMMUS_SCOPE itself runs on** — SoilGrids
+  texture through Schaap/Rosetta pedotransfer, assembled by PyStemmusScope. θ_sat and θ_r
+  are read straight off the van Genuchten curve and θ_fc is that curve evaluated at
+  −33 kPa, over the top 100 cm, interpolated from the SoilGrids layer midpoints onto the
+  sensor depths. Using the model's own soil is deliberate: `WSF · ETo` and the model's
+  transpiration then rest on the same soil, so a disagreement between them means
+  something. The −33 kPa convention is the model's own, verified by reproducing its
+  `fieldMC` to 0.001 at every layer. θ_wp is still computed at −1500 kPa and quoted where
+  it is useful, but it no longer drives the stress factor.
 - **A logger uses the nearest instrument that actually measures each thing.** Weather
   comes from the field's ATMOS-41 (`met_source`) and soil water from the nearest working
   probe (`soil_source`), so every logger can show ET and stress — `F1_4_WPST` measures no
@@ -248,8 +271,28 @@ Read this before trusting a number.
   separately — about 30% of this network's record is that slow, where vane direction is
   noise. Directions are meteorological, i.e. the direction wind blows *from*, confirmed
   against the prevailing SSW/SW at Glanerbeek.
-- **Depth colours are fixed per depth value**, so 20 cm is the same colour on every logger.
-  The palette is validated for colour-vision deficiency rather than chosen by eye.
+- **Depth colours are fixed per depth value**, so 20 cm is the same colour on every logger
+  and in every panel — moisture, temperature, matric potential and EC alike. The ramp runs
+  shallow to deep, dark red at the surface to deep blue at 80 cm, so the ordering of the
+  profile is legible without reading the legend. It goes through purple rather than
+  straight from red to blue: a direct interpolation passes through near-white in the
+  middle two steps, and those lines vanish on this white ground.
+- **Every chart carries its own period pills** — 1W · 1M · 3M · 6M · 1Y · All — directly
+  above it, so soil moisture can be on a year while the wind rose is on a week. Each sits
+  in its own fragment, so changing one redraws that chart alone rather than the page. The
+  window is applied **server-side** rather than by Plotly's in-chart range buttons, which
+  would look the same and read worse: every figure decimates to about 4000 points for the
+  span it is given, so zooming a year down to a week in the browser would leave you
+  reading 6-hourly means of 5-minute data. The Summary has no picker, a climatology being
+  the whole record by definition.
+- **One figure serves a phone and a laptop.** Every axis sets `automargin`, so a panel
+  takes exactly the width its labels need rather than a fixed gutter — which used to
+  spend half a 375 px screen on empty margin. `wunder.plot.compact(fig)` does what that
+  cannot judge from inside the figure: it wraps the title, moves the legend below the
+  plot, shrinks the type a step, and leaves a multi-row figure's height alone. The app
+  applies it from a User-Agent guess, with a sidebar toggle to override — Streamlit
+  cannot report the viewport width, so portrait and landscape are not distinguishable
+  without asking.
 - Series are decimated before plotting (~4000 points) so a three-year view stays responsive;
   precipitation is summed and everything else averaged.
 
@@ -300,8 +343,8 @@ app.py               Streamlit UI — thin; no logic of its own
 wunder/metadata.py   registry: sites, loggers, sensors, column naming
 wunder/fetch.py      API client + incremental Parquet cache
 wunder/process.py    root-zone averages, resampling, wind binning, sensor lifetimes
-wunder/et.py         Makkink reference ET and the P − ET0 water balance
-wunder/stress.py     FAO-56 water stress factor, water-limited ET, retention curves
+wunder/et.py         Makkink reference ET (ETo) and the P − ETo water balance
+wunder/stress.py     sigmoid water stress factor, ETa, retention curves
 forcing/extract_soil.py   caches the model's soil hydraulics as JSON (needs the geo env)
 model_input/soil/    SoilGrids van Genuchten parameters per site, committed
 wunder/plots.py      Plotly figure builders

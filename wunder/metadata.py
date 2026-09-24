@@ -23,17 +23,6 @@ REGISTRY_PATH = Path(__file__).resolve().parent.parent / "sites.yaml"
 # Depths, shallowest first. Used to order series so legends read top-down.
 DEPTH_ORDER = ["2.5", "5", "10", "20", "40", "80"]
 
-# Fixed depth -> colour, so a depth is the same colour in every figure.
-# Carried over from trial/Ketelbroek_DataReport.ipynb cell 5.
-DEPTH_COLORS = {
-    "2.5": "blue",
-    "5": "orange",
-    "10": "green",
-    "20": "red",
-    "40": "purple",
-    "80": "brown",
-}
-
 
 def _depth_key(depth: str) -> float:
     return float(depth)

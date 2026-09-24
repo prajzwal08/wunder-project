@@ -82,22 +82,19 @@ def root_zone(
     df: pd.DataFrame,
     measure: str = "moisture",
     *,
-    method: str = "trapezoid",
     columns: list[str] | None = None,
     min_coverage: float = 0.9,
 ) -> pd.Series:
-    """Depth-weighted root-zone average over all reporting depths.
+    """Thickness-weighted root-zone average over all reporting depths.
 
-    method="trapezoid" is the equation written up in the notebook's action point 3:
+    Each sensor represents the slab around it, as `thicknesses` defines it, and the
+    profile mean is those values weighted by slab thickness (`get_rzsm2` in the
+    Ketelbroek notebook, and what its figures plot).
 
-        RZSM = (2*t1*L1 + (t1+t2)*L2 + ... + (t_{i-1}+t_i)*Li) / (2*(L1+...+Li))
-
-    i.e. the profile varies linearly between sensors.
-
-    method="weighted" is the simple thickness-weighted mean (`get_rzsm2`), which treats each
-    sensor as representative of its whole layer. **This is what the notebook actually plots**,
-    so use it to reproduce those figures. The two differ most when the profile has a strong
-    gradient near the surface.
+    A trapezoidal variant -- the profile varying linearly between sensors -- used to be
+    selectable here and in the app. It was dropped: the two agree to well within the
+    spread between loggers in the same field, and offering the choice implied the
+    difference carried meaning that it does not.
     """
     if measure not in AVERAGEABLE:
         raise ValueError(
@@ -121,18 +118,8 @@ def root_zone(
     L = np.asarray(thicknesses(depths_of(cols)), dtype="float64")
     values = df[cols].to_numpy(dtype="float64")
 
-    if method == "weighted":
-        num = values @ L
-        den = L.sum()
-    elif method == "trapezoid":
-        num = 2.0 * values[:, 0] * L[0]
-        if len(cols) > 1:
-            num = num + (values[:, :-1] + values[:, 1:]) @ L[1:]
-        den = 2.0 * L.sum()
-    else:
-        raise ValueError(f"method must be 'trapezoid' or 'weighted', got {method!r}")
-
-    return pd.Series(num / den, index=df.index, name=f"root_zone_{measure}")
+    return pd.Series(values @ L / L.sum(), index=df.index,
+                     name=f"root_zone_{measure}")
 
 
 def rzsm(df: pd.DataFrame, **kw) -> pd.Series:

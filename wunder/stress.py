@@ -3,26 +3,40 @@
 `wunder.et` gives ET0, the demand a well-watered sward would meet. This module gives
 the factor that closes the gap to what a *real*, sometimes-dry soil supplies:
 
-    ET_actual = Ks * Kc * ET0
+    ETa = WSF * Kc * ETo
 
-`Ks` is the FAO-56 water stress coefficient. It is 1 while the profile still holds
-readily available water and falls linearly to 0 at the wilting point:
+`WSF` is the water stress factor: a smooth sigmoid in soil water content, 1 when the
+soil can meet any demand and 0 when it can meet none.
 
-    TAW  = theta_fc - theta_wp          total available water
-    RAW  = p * TAW                      readily available -- taken without stress
-    Ks   = 1                                             while theta >= theta_fc - RAW
-    Ks   = (theta - theta_wp) / ((1 - p) * TAW)          below that, clipped to [0, 1]
+    WSF(theta) = 1 / (1 + exp(-k * theta_sat * (theta - (theta_fc + theta_r) / 2)))
 
-**theta_fc and theta_wp come from the model's own soil.** They are read off the van
+Half stress sits exactly midway between field capacity and residual water content, and
+`theta_sat` sets how sharply the curve turns -- a coarse soil, which holds more water at
+saturation, switches over a narrower band than a fine one. `k = 100` is the one free
+constant and it is dimensionless; everything else is read from the soil.
+
+This replaced an FAO-56 `Ks`, which ramped linearly from a threshold at `theta_fc - p*TAW`
+down to zero at the wilting point. Two reasons. The FAO-56 form needs a depletion fraction
+`p` that nothing at these sites measures, and it has a hard kink at the threshold that no
+soil exhibits. The sigmoid's parameters all come from the site's own retention curve.
+
+**WSF is computed per layer and then weighted, never the other way round.** Each sensor
+depth gets its own `theta_fc`, `theta_r` and `theta_sat`, its own WSF, and only then are
+the layer values thickness-weighted into one profile number (`profile_stress`). Averaging
+the moisture first would let a wet 80 cm hide a bone-dry 5 cm before the non-linearity
+ever sees them.
+
+**The soil parameters come from the model's own soil.** They are read off the van
 Genuchten curve that STEMMUS_SCOPE runs on -- SoilGrids texture through the
 Schaap/Rosetta pedotransfer, assembled by PyStemmusScope and cached as JSON by
 `forcing/extract_soil.py`:
 
     theta(h) = theta_r + (theta_s - theta_r) / (1 + (alpha*h)^n)^(1 - 1/n)
     theta_fc = theta(336 cm)     = theta at -33 kPa
-    theta_wp = theta(15300 cm)   = theta at -1500 kPa
+    theta_sat, theta_r           read straight off the file
+    theta_wp = theta(15300 cm)   = theta at -1500 kPa, kept for reference
 
-Using the model's soil rather than an independent one is deliberate: `Ks * ET0` and
+Using the model's soil rather than an independent one is deliberate: `WSF * ET0` and
 the model's own transpiration then rest on the same soil, so a disagreement between
 them means something. Verified against the file rather than assumed -- STEMMUS_SCOPE
 carries its own `fieldMC`, and theta evaluated at -33 kPa reproduces it to 0.001 at
@@ -39,7 +53,7 @@ set by the air-entry region below 9 kPa which the TEROS21 cannot measure. See
 `soil_retention_notes.txt`.
 
     import wunder as w
-    ks, info = w.stress.root_zone_stress(w.fetch("F1_3_SMST3"), site="NL-Gl1")
+    wsf, per_depth, info = w.stress.profile_stress(w.fetch("F1_3_SMST3"), site="NL-Gl1")
 """
 
 from __future__ import annotations
@@ -51,7 +65,7 @@ import numpy as np
 import pandas as pd
 
 from .metadata import forcing_sites, measures
-from .process import depth_columns, root_zone
+from .process import depth_columns, depths_of, thicknesses
 
 #: Where `forcing/extract_soil.py` caches the parameters.
 SOIL_DIR = Path(__file__).resolve().parent.parent / "model_input" / "soil"
@@ -71,10 +85,11 @@ CM_PER_KPA = 10.197
 #: not root zone here.
 MAX_DEPTH_CM = 100.0
 
-#: FAO-56 Table 22 depletion fraction: the share of available water a plant takes
-#: freely, so `1 - p` is the share over which stress develops. 0.5 is the value for
-#: deciduous trees and orchards, the closest listed analogue to a food forest.
-DEFAULT_P = 0.5
+#: Steepness of the sigmoid, multiplying theta_sat to give the logistic slope [-].
+#: With theta_sat ~ 0.4-0.5 on these soils the transition spans roughly theta_r to
+#: theta_fc: WSF is 0.01-0.11 at residual, 0.5 at the midpoint and 0.90-0.99 at field
+#: capacity. Raising it sharpens the switch towards a step.
+STEEPNESS = 100.0
 
 
 # --- the model's soil ------------------------------------------------------
@@ -141,6 +156,10 @@ def layer_limits(site: str, *, field_capacity_kpa: float = FIELD_CAPACITY_KPA,
 def water_limits(site: str, depths: list[str], **kw) -> dict[str, dict]:
     """`{depth: limits}` for sensor depths, interpolated from the layer midpoints.
 
+    Each entry carries the four numbers the sigmoid WSF needs -- `theta_sat`,
+    `theta_fc`, `theta_half` and `theta_r` -- plus `theta_wp`, which no longer drives
+    anything but is still the soil's real wilting point and is worth being able to quote.
+
     The sensors sit at 2.5, 5, 10, 20, 40 and 80 cm; the SoilGrids layers are
     0-5, 5-15, 15-30, 30-60 and 60-100, whose midpoints are 2.5, 10, 22.5, 45 and
     80. Interpolating in depth between midpoints is smoother than snapping each
@@ -153,13 +172,15 @@ def water_limits(site: str, depths: list[str], **kw) -> dict[str, dict]:
     out = {}
     for depth in depths:
         z = float(depth)
-        theta_fc = float(np.interp(z, mid, layers["theta_fc"].to_numpy()))
-        theta_wp = float(np.interp(z, mid, layers["theta_wp"].to_numpy()))
+        at = lambda col: float(np.interp(z, mid, layers[col].to_numpy()))  # noqa: E731
+        theta_fc, theta_r = at("theta_fc"), at("theta_r")
         out[depth] = {
             "depth": depth,
+            "theta_sat": at("theta_s"),
             "theta_fc": theta_fc,
-            "theta_wp": theta_wp,
-            "taw": theta_fc - theta_wp,
+            "theta_half": 0.5 * (theta_fc + theta_r),
+            "theta_r": theta_r,
+            "theta_wp": at("theta_wp"),
             "source": "soilgrids",
             "site": site,
         }
@@ -169,36 +190,59 @@ def water_limits(site: str, depths: list[str], **kw) -> dict[str, dict]:
 # --- the stress factor -----------------------------------------------------
 
 
-def stress_factor(theta, theta_fc: float, theta_wp: float, p: float = DEFAULT_P):
-    """FAO-56 water stress coefficient Ks, in [0, 1].
+def stress_factor(theta, theta_fc: float, theta_r: float, theta_sat: float,
+                  *, steepness: float = STEEPNESS, **_ignored):
+    """Sigmoid water stress factor, WSF, in (0, 1).
 
-    1 while the soil still holds readily available water, then a straight line down
-    to 0 at the wilting point.
+        WSF = 1 / (1 + exp(-k * theta_sat * (theta - (theta_fc + theta_r) / 2)))
+
+    Half stress sits midway between field capacity and residual water content;
+    `theta_sat` sets how sharply the curve turns there.
+
+    Unlike the FAO-56 ramp this replaced, WSF never reaches exactly 1 or 0 -- a
+    profile sitting at field capacity reads 0.90-0.99 on these soils, not 1.00.
+
+    `**_ignored` lets a full per-depth limits dict be splatted in without first
+    having to strip the entries this function does not use (`theta_wp`, `depth`,
+    `site` and so on).
     """
-    if not 0.0 < p < 1.0:
-        raise ValueError(f"p is a fraction of available water, got {p}")
-    taw = theta_fc - theta_wp
-    if taw <= 0:
+    if theta_sat <= 0:
+        raise ValueError(f"saturated water content must be positive, got {theta_sat}")
+    if theta_fc <= theta_r:
         raise ValueError(
-            f"field capacity {theta_fc:.3f} is not above wilting point {theta_wp:.3f}"
+            f"field capacity {theta_fc:.3f} is not above residual {theta_r:.3f}"
         )
-    ks = (theta - theta_wp) / ((1.0 - p) * taw)
-    return ks.clip(0.0, 1.0) if hasattr(ks, "clip") else float(np.clip(ks, 0.0, 1.0))
-
-
-def adjust_p(p: float, etc_mm_day) -> float:
-    """FAO-56's demand correction to the depletion fraction (eq. 83).
-
-    A plant stresses sooner on a 6 mm/day than on a 2 mm/day, because the roots
-    cannot keep up even from moist soil. Clipped to the range the table covers.
-    """
-    return float(np.clip(p + 0.04 * (5.0 - np.nanmean(np.asarray(etc_mm_day,
-                                                                dtype="float64"))),
-                         0.1, 0.8))
+    mid = 0.5 * (theta_fc + theta_r)
+    # The clip only guards `exp` against overflow warnings on absurd input; on these
+    # soils the exponent never leaves +/-25.
+    z = np.clip(steepness * theta_sat * (theta - mid), -500.0, 500.0)
+    wsf = 1.0 / (1.0 + np.exp(-z))
+    return pd.Series(wsf, index=theta.index) if isinstance(theta, pd.Series) else wsf
 
 
 def _depth_of(column: str) -> str:
     return column.split()[-1].removesuffix("cm")
+
+
+def _profile_columns(df: pd.DataFrame, *, min_coverage: float = 0.9,
+                     max_depth_cm: float = MAX_DEPTH_CM) -> list[str]:
+    """The moisture columns that define "the profile", shallowest first.
+
+    A depth that died mid-record is dropped, so the profile means the same thing
+    through the whole series and year-on-year comparison stays honest -- z6-21178 lost
+    its 20 cm probe in February 2024 and has three good years after it. Anything below
+    the soil file's 100 cm goes too, since nothing that deep is root zone here.
+    """
+    cols = depth_columns(df, "moisture")
+    if cols and min_coverage:
+        keep = [c for c in cols if df[c].notna().mean() >= min_coverage]
+        cols = keep or cols
+    return [c for c in cols if float(_depth_of(c)) <= max_depth_cm]
+
+
+def _profile_weights(cols: list[str]) -> np.ndarray:
+    """Thickness each sensor stands for [cm], from the same rule the averages use."""
+    return np.asarray(thicknesses(depths_of(cols)), dtype="float64")
 
 
 def root_zone_limits(
@@ -207,18 +251,17 @@ def root_zone_limits(
     site: str | None = None,
     ref: str | None = None,
     limits: dict[str, dict] | None = None,
-    p: float = DEFAULT_P,
-    method: str = "trapezoid",
     min_coverage: float = 0.9,
     max_depth_cm: float = MAX_DEPTH_CM,
 ) -> dict:
-    """This profile's own theta_fc, theta_wp and stress threshold [m3 m-3].
+    """This profile's own theta_sat, theta_fc, midpoint and theta_r [m3 m-3].
 
-    The three numbers a root-zone moisture series should be read against, on the same
-    weighting as the series itself. `{}` when the frame carries no usable moisture.
+    The four numbers a root-zone moisture series should be read against, thickness-
+    weighted over the same columns as the series itself. `{}` when the frame carries
+    no usable moisture.
 
-    Separated from `root_zone_stress` because a figure often wants only the limits --
-    two horizontal lines behind a moisture curve -- and computing Ks over a
+    Separated from `profile_stress` because a figure often wants only the limits --
+    four horizontal lines behind a moisture curve -- and evaluating the sigmoid over a
     quarter-million rows to get them would be waste.
     """
     if site is None:
@@ -226,12 +269,7 @@ def root_zone_limits(
             raise ValueError("give site= or ref= so the soil can be looked up")
         site = site_of(ref)
 
-    cols = depth_columns(df, "moisture")
-    if cols and min_coverage:
-        keep = [c for c in cols if df[c].notna().mean() >= min_coverage]
-        cols = keep or cols
-    # Nothing below the profile the soil file describes.
-    cols = [c for c in cols if float(_depth_of(c)) <= max_depth_cm]
+    cols = _profile_columns(df, min_coverage=min_coverage, max_depth_cm=max_depth_cm)
     if not cols:
         return {}
 
@@ -239,53 +277,77 @@ def root_zone_limits(
         limits = water_limits(site, [_depth_of(c) for c in cols],
                               max_depth_cm=max_depth_cm)
 
-    bounds = pd.DataFrame(
-        [[limits[_depth_of(c)]["theta_fc"] for c in cols],
-         [limits[_depth_of(c)]["theta_wp"] for c in cols]],
-        columns=cols,
-    )
-    weighted = root_zone(bounds, "moisture", method=method, columns=cols)
-    theta_fc, theta_wp = float(weighted.iloc[0]), float(weighted.iloc[1])
+    weights = _profile_weights(cols)
+    total = weights.sum()
+
+    def weighted(key: str) -> float:
+        values = np.array([limits[_depth_of(c)][key] for c in cols], dtype="float64")
+        return float(values @ weights / total)
+
     return {
         "site": site,
         "columns": cols,
         "depths": [_depth_of(c) for c in cols],
-        "theta_fc": theta_fc,
-        "theta_wp": theta_wp,
-        "taw": theta_fc - theta_wp,
-        "threshold": theta_fc - p * (theta_fc - theta_wp),
-        "p": p,
-        "method": method,
+        "thicknesses": weights.tolist(),
+        "theta_sat": weighted("theta_sat"),
+        "theta_fc": weighted("theta_fc"),
+        "theta_half": weighted("theta_half"),
+        "theta_r": weighted("theta_r"),
+        "theta_wp": weighted("theta_wp"),
+        "steepness": STEEPNESS,
         "source": "soilgrids",
         "limits": {_depth_of(c): limits[_depth_of(c)] for c in cols},
     }
 
 
-def root_zone_stress(
+def profile_stress(
     df: pd.DataFrame,
     *,
-    p: float = DEFAULT_P,
-    method: str = "trapezoid",
+    steepness: float = STEEPNESS,
+    min_coverage: float = 0.9,
+    max_depth_cm: float = MAX_DEPTH_CM,
     **kw,
-) -> tuple[pd.Series, dict]:
-    """Root-zone Ks through time, with the provenance of the numbers behind it.
+) -> tuple[pd.Series, pd.DataFrame, dict]:
+    """WSF per layer, thickness-weighted into one profile value.
 
-    Give either `site` (a forcing code like 'NL-Gl1') or `ref` (a logger name or
-    serial, from which the site is looked up).
+    Returns `(wsf, per_depth, info)`: the profile series, the per-depth WSF frame
+    behind it, and the provenance of every number. Give either `site` (a forcing code
+    like 'NL-Gl1') or `ref` (a logger name or serial, from which the site is found).
 
-    The profile's theta_fc and theta_wp are depth-weighted with *the same* weights,
-    columns and method as the soil moisture itself -- by running the limits back
-    through `process.root_zone` rather than re-deriving a weighting here. That is
-    what keeps "Ks = 1" meaning *this* profile is at field capacity, rather than
-    some other average of some other set of depths.
+    **Per layer first, then weighted.** Each depth's WSF uses that depth's own
+    theta_fc, theta_r and theta_sat, interpolated from the site's van Genuchten
+    profile. Only the resulting stress factors are averaged. Averaging the moisture
+    first and evaluating the sigmoid once would let a wet 80 cm mask a bone-dry 5 cm,
+    which is exactly the situation the factor exists to detect.
+
+    **The weighting is a modelling choice, not an identity.** WSF is an intensive
+    ratio, so unlike stored water it does not add up over a profile. Thickness
+    weighting reads it as *the share of root-zone demand the profile can meet, each
+    sensor standing for the slab around it*. The physically right weight is root
+    density, which this network cannot supply -- the same argument `process.py` makes
+    for refusing a depth-weighted matric potential applies here, except that here a
+    defensible proxy exists and is named rather than hidden.
     """
-    info = root_zone_limits(df, p=p, method=method, **kw)
+    info = root_zone_limits(df, min_coverage=min_coverage,
+                            max_depth_cm=max_depth_cm, **kw)
     if not info:
-        return pd.Series(dtype="float64", name="Ks"), {"reason": "no soil moisture"}
+        empty = pd.Series(dtype="float64", name="wsf")
+        return empty, pd.DataFrame(index=df.index), {"reason": "no soil moisture"}
 
-    theta = root_zone(df, "moisture", method=method, columns=info["columns"])
-    ks = stress_factor(theta, info["theta_fc"], info["theta_wp"], p).rename("Ks")
-    return ks.dropna(), info
+    cols, limits = info["columns"], info["limits"]
+    per_depth = pd.DataFrame(
+        {c: stress_factor(df[c], steepness=steepness, **limits[_depth_of(c)])
+         for c in cols},
+        index=df.index,
+    )
+
+    weights = _profile_weights(cols)
+    wsf = pd.Series(
+        per_depth.to_numpy(dtype="float64") @ weights / weights.sum(),
+        index=df.index, name="wsf",
+    )
+    info["steepness"] = steepness
+    return wsf.dropna(), per_depth, info
 
 
 def actual_et(
@@ -293,21 +355,24 @@ def actual_et(
     met: pd.DataFrame | None = None,
     *,
     crop_coefficient: float = 1.0,
-    p: float = DEFAULT_P,
-    adjust_for_demand: bool = False,
+    steepness: float = STEEPNESS,
     **kw,
 ) -> pd.DataFrame:
-    """Daily ET0, Ks and the water-limited ET they imply [mm d-1].
+    """Daily ETo, WSF and the water-limited ETa they imply [mm d-1].
 
-    Supply and demand come from different instruments and that is the point: the
-    soil moisture is this logger's own, while ET0 needs a weather station, and
-    eleven of the fourteen loggers have none. Pass `ref` and the field's ATMOS-41 is
-    found and fetched automatically -- the same `met_source` rule the water-potential
-    figure already uses for VPD, so a soil logger and its station are paired the same
-    way everywhere in the package. Pass `met` explicitly to override, or to avoid the
-    fetch when the frame is already in hand.
+    Columns `et0`, `wsf`, `et`. Supply and demand come from different instruments and
+    that is the point: the soil moisture is this logger's own, while ETo needs a
+    weather station, and eleven of the fourteen loggers have none. Pass `ref` and the
+    field's ATMOS-41 is found and fetched automatically -- the same `met_source` rule
+    the water-potential figure already uses for VPD, so a soil logger and its station
+    are paired the same way everywhere in the package. Pass `met` explicitly to
+    override, or to avoid the fetch when the frame is already in hand.
 
-    `crop_coefficient` (Kc) defaults to 1, so this reports `Ks * ET0` and makes no
+    WSF is the profile value from `profile_stress`, so it is already per-layer-then-
+    weighted; the per-depth frame is kept on `attrs["per_depth"]` for anything that
+    wants to show the layers behind it.
+
+    `crop_coefficient` (Kc) defaults to 1, so this reports `WSF * ETo` and makes no
     claim about how a food forest's canopy differs from the reference grass. Kc for
     this vegetation is genuinely unknown, and inventing one would bury a guess inside
     a number that otherwise rests on measurements.
@@ -319,17 +384,16 @@ def actual_et(
         met, station = _weather_for(df, kw.get("ref"))
     et0 = reference_et(met if met is not None else df)
     if et0.empty:
-        return pd.DataFrame(columns=["et0", "ks", "et"])
+        return pd.DataFrame(columns=["et0", "wsf", "et"])
 
-    if adjust_for_demand:
-        p = adjust_p(p, et0 * crop_coefficient)
-    ks, info = root_zone_stress(df, p=p, **kw)
-    if ks.empty:
-        return pd.DataFrame(columns=["et0", "ks", "et"])
+    wsf, per_depth, info = profile_stress(df, steepness=steepness, **kw)
+    if wsf.empty:
+        return pd.DataFrame(columns=["et0", "wsf", "et"])
 
-    out = pd.DataFrame({"et0": et0, "ks": ks.resample("1D").mean()}).dropna()
-    out["et"] = out["ks"] * crop_coefficient * out["et0"]
+    out = pd.DataFrame({"et0": et0, "wsf": wsf.resample("1D").mean()}).dropna()
+    out["et"] = out["wsf"] * crop_coefficient * out["et0"]
     out.attrs.update(info)
+    out.attrs["per_depth"] = per_depth.resample("1D").mean()
     out.attrs["crop_coefficient"] = crop_coefficient
     out.attrs["station"] = station
     return out
@@ -449,7 +513,8 @@ def compare_limits(df: pd.DataFrame, site: str, depths: list[str] | None = None,
         row = {"depth": depth,
                "model_fc": round(model[depth]["theta_fc"], 3),
                "model_wp": round(model[depth]["theta_wp"], 3),
-               "model_taw": round(model[depth]["taw"], 3)}
+               "model_taw": round(model[depth]["theta_fc"]
+                                  - model[depth]["theta_wp"], 3)}
         if obs:
             row |= {"obs_fc": round(obs["theta_fc"], 3),
                     "obs_wp": round(obs["theta_wp"], 3),

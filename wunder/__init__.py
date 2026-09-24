@@ -19,7 +19,6 @@ from . import plots as plot
 from .et import makkink, reference_et, water_balance
 from .fetch import FetchError, cache_status, fetch, is_stale, units, update, update_all
 from .metadata import (
-    DEPTH_COLORS,
     DEPTH_ORDER,
     Logger,
     Site,
@@ -52,7 +51,6 @@ from .process import (
 )
 
 __all__ = [
-    "DEPTH_COLORS",
     "DEPTH_ORDER",
     "FetchError",
     "Logger",

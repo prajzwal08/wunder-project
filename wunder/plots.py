@@ -21,6 +21,8 @@ Don't change a hex without re-running the palette validator.
 
 from __future__ import annotations
 
+import re
+
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -41,8 +43,11 @@ MUTED = "#666666"
 GRID = "#e8e8e4"
 AXIS = "#999999"
 
-# Depth hues, shallow -> deep. Validated: adjacent-pair CVD dE 9.1, normal-vision 19.6.
-DEPTH_HUES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300"]
+# Depth ramp, shallow -> deep: dark red at the surface to deep blue at 80 cm, so the
+# ordering of the profile is legible without reading the legend. The path runs through
+# purple rather than straight from red to blue, because a direct interpolation passes
+# through near-white in the middle two steps and those lines vanish on this white ground.
+DEPTH_HUES = ["#7f0000", "#b5192b", "#d4456f", "#9b4fa8", "#3a5fbf", "#0d2a6b"]
 
 # Comparing entities (sites, fields, years). Capped at three overlaid.
 SERIES = ["#2a78d6", "#eb6834", "#1baf7a"]
@@ -50,14 +55,28 @@ MAX_SERIES = len(SERIES)
 
 RAIN = "#7fa9d8"
 AIR = "#d03b3b"
-# Soil water limits drawn behind a moisture curve -- field capacity and wilting point,
-# with the stress threshold between them in a lighter tint because it is derived from a
-# chosen depletion fraction, not read off the retention curve.
-LIMIT = "#c0392b"
-LIMIT_SOFT = "#e08a80"
+# The four soil water limits, drawn behind a moisture curve and as the marks on the WSF
+# explainer, so the two always agree. Wet at the top of the profile, dry at the bottom:
+# saturation, field capacity, the halfway point where WSF = 0.5, and residual.
+THETA_SAT_C = "#0d2a6b"   # deep blue
+THETA_FC_C = "#1a7a3c"    # green
+THETA_HALF_C = "#d9a400"  # yellow, always dotted -- it is a derived midpoint, not a
+                          # property read off the retention curve
+THETA_R_C = "#7f0000"     # dark red
 # The current year in a climatology panel, and its axis when a second axis shares the
 # panel with it.
 YEAR_INK = "#0d366b"
+# Earlier years in a climatology panel, oldest first: one line each, pale enough to sit
+# behind the current year but separable from one another. Sampled by position so a
+# logger with three years of record and one with six put the same calendar year at
+# roughly the same shade.
+PAST_YEARS = ["#d4e2f4", "#b6cdea", "#98b6df", "#7a9fd3", "#5c88c5", "#3f70ad"]
+# The year a reader has picked out. It needs its own strong colour rather than just full
+# opacity: the pale end of the ramp above is background even at full strength and double
+# width, so "2023 is selected" would be invisible on exactly the years hardest to see.
+# Burnt orange reads against both the blue ramp and the black current year, and survives
+# red-green colour blindness.
+PICKED_YEAR = "#d1571f"
 RAD = "#eda100"
 VPD_C = "#1baf7a"
 RZ = "#6a3d9a"
@@ -82,6 +101,21 @@ VPD = "Vapor Pressure Deficit"
 VP = "Vapor Pressure"
 
 MAX_POINTS = 4000
+
+#: Left/right margin in a panel. Generous enough for a rotated axis title at desktop
+#: width; `compact()` trims it for a phone, where 94 px a side is a quarter of the screen.
+MARGIN_X = 56
+
+# Precipitation is a total over an interval, so its axis is "mm per interval". The
+# pandas alias is not a unit a reader should have to parse -- `mm 1h-1` was reaching
+# the screen.
+_FREQ_LABEL = {"30min": "mm/30 min", "1h": "mm/h", "6h": "mm/6 h",
+               "1D": "mm/day", "1W": "mm/week"}
+
+
+def _precip_units(freq: str) -> str:
+    """Axis unit for precipitation bars binned at `freq`."""
+    return _FREQ_LABEL.get(freq, f"mm/{freq}")
 
 
 def depth_color(depth: str) -> str:
@@ -111,7 +145,10 @@ def _style(fig: go.Figure, title: str | None, height: int, *, legend: bool = Tru
         font=dict(family=FONT, size=FS_TICK, color=INK_2),
         title=dict(text=title, font=dict(family=FONT, size=FS_TITLE, color=INK),
                    x=0, xanchor="left", y=0.97, yanchor="top") if title else None,
-        margin=dict(l=94, r=94, t=76 if title else 40, b=64),
+        # A floor, not a fixed width: `automargin` below grows these to fit whatever the
+        # tick labels and axis titles actually need. Fixed 94 px gutters spent half of a
+        # 375 px phone screen on empty margin.
+        margin=dict(l=MARGIN_X, r=MARGIN_X, t=76 if title else 40, b=48),
         height=height,
         hovermode="x unified",
         hoverlabel=dict(bgcolor=SURFACE, bordercolor=AXIS,
@@ -128,6 +165,10 @@ def _style(fig: go.Figure, title: str | None, height: int, *, legend: bool = Tru
         tickfont=dict(family=FONT, size=FS_TICK, color=INK_2),
         title_font=dict(family=FONT, size=FS_AXIS_TITLE, color=INK),
         zeroline=False,
+        # The one thing that makes a figure work at 375 px and at 1500 px without the
+        # caller having to know which it is: Plotly measures the labels it actually drew
+        # and takes exactly the margin they need.
+        automargin=True,
     )
     fig.update_xaxes(showgrid=False, **axis_common)
     fig.update_yaxes(showgrid=True, gridcolor=GRID, gridwidth=1, **axis_common)
@@ -140,11 +181,88 @@ def _panel(title: str | None = None, height: int = 400, *, secondary: bool = Fal
     return _style(fig, title, height, legend=legend)
 
 
+def _wrap(text: str, width: int = 34) -> str:
+    """Break a title onto `<br>` lines at word boundaries."""
+    words, lines, line = text.split(), [], ""
+    for word in words:
+        trial = f"{line} {word}".strip()
+        if len(trial) > width and line:
+            lines.append(line)
+            line = word
+        else:
+            line = trial
+    if line:
+        lines.append(line)
+    return "<br>".join(lines)
+
+
+def compact(fig: go.Figure, *, title_width: int = 34) -> go.Figure:
+    """Re-lay a finished figure for a narrow screen.
+
+    Margins are not this function's job -- every panel sets `automargin`, so each already
+    takes only the width its labels need at whatever size it is drawn, which is what
+    makes one figure work at 375 px and at 1500 px. What `automargin` cannot decide is
+    that 16 px tick type is too big for a 340 px plot, that a one-line title will run off
+    the edge, or that an eight-entry legend stacked at the top will eat a third of the
+    panel. Those are judgements about the viewport, which only the caller can make.
+
+    Three changes, in order of how much they matter on a phone:
+
+    1. **The legend moves below the plot.** At the top it pushes the data down and
+       collides with the title; below, it costs only the bottom margin, which is sized
+       here from how many lines it will take.
+    2. **The title wraps** at `title_width` characters instead of overflowing.
+    3. **Type shrinks a step**, and a single-panel figure loses a little height. A
+       multi-row figure keeps its height -- its rows are already short, and shrinking
+       them further is what turns four readable panels into four stripes.
+    """
+    rows = len({k for k in fig.layout if k.startswith("yaxis")}) or 1
+    names = [t.name for t in fig.data if t.showlegend is not False and t.name]
+    # How many lines the legend will take is a function of the rendered width, which is
+    # the browser's business, not ours. Estimate it from the name lengths -- "2.5 cm"
+    # packs several to a line, "Cumulative ET<sub>o</sub>" does not -- and round up.
+    # Spare white space below a figure costs nothing; a clipped legend costs the key.
+    longest = max((len(re.sub(r"<[^>]+>", "", n)) for n in names), default=6)
+    per_line = 1 if longest > 11 else 2 if longest > 7 else 3
+    bottom = 40 + 20 * max(1, -(-len(names) // per_line))
+
+    title = fig.layout.title.text if fig.layout.title else None
+    tall = fig.layout.height or 400
+
+    fig.update_layout(
+        margin=dict(l=8, r=8, t=44 if title else 16, b=bottom),
+        height=(tall if rows > 1 else max(260, int(tall * 0.86))) + bottom - 48,
+        font=dict(size=FS_TICK - 3),
+        # Anchored to the figure's own bottom-left corner, not the plot area's: with
+        # `automargin` the plot area starts wherever the y labels happen to end, which
+        # left the legend indented by a different amount on every panel.
+        legend=dict(orientation="h", xref="container", x=0.02, xanchor="left",
+                    yref="container", y=0.012, yanchor="bottom",
+                    font=dict(size=FS_LEGEND - 4)),
+    )
+    if title:
+        fig.update_layout(title=dict(text=_wrap(title, title_width),
+                                     font=dict(size=FS_TITLE - 5), y=0.985))
+    fig.update_xaxes(title_font=dict(size=FS_AXIS_TITLE - 5),
+                     tickfont=dict(size=FS_TICK - 3))
+    fig.update_yaxes(title_font=dict(size=FS_AXIS_TITLE - 5),
+                     tickfont=dict(size=FS_TICK - 3))
+    return fig
+
+
 def _title(logger: Logger | str | None, text: str) -> str:
-    if logger is None:
-        return text
-    lg = logger if isinstance(logger, Logger) else _logger(logger)
-    return f"{text} — {lg.name}"
+    """The title a figure carries. Currently just `text`.
+
+    Every figure used to end "— F1_1_ATMOS_SMST1", which the app's own page heading
+    already says two lines above it; on a tab full of charts that is the logger's name
+    repeated a dozen times and nothing else.
+
+    `logger` is still threaded through all thirty-odd call sites deliberately. A caller
+    outside the app -- a notebook, a figure for a paper -- has no page heading to lean
+    on, and giving the suffix back is then a one-line change here rather than a hunt
+    through every builder.
+    """
+    return text
 
 
 # -- decimation -------------------------------------------------------------
@@ -221,7 +339,7 @@ def soil_moisture(
 
     if bar is not None:
         fig.add_trace(bar, secondary_y=True)
-        fig.update_yaxes(title_text=f"Precipitation (mm {freq}<sup>-1</sup>)",
+        fig.update_yaxes(title_text=f"Precipitation ({_precip_units(freq)})",
                          secondary_y=True, autorange="reversed", showgrid=False)
     for c in cols:
         tr = _line(d.index, d[c], _depth_label(c), _col_color(c))
@@ -260,13 +378,12 @@ def root_zone_moisture(
     df: pd.DataFrame,
     *,
     precip: bool = True,
-    method: str = "trapezoid",
     logger: Logger | str | None = None,
     ylim: tuple[float, float] | None = (0.0, 0.6),
     max_points: int | None = MAX_POINTS,
 ) -> go.Figure:
-    """Depth-weighted root-zone soil moisture, with rainfall."""
-    rz = root_zone(df, "moisture", method=method)
+    """Thickness-weighted root-zone soil moisture, with rainfall."""
+    rz = root_zone(df, "moisture")
     d = _decimate(df.assign(_rz=rz), max_points)
     depths = depths_of(depth_columns(df, "moisture"))
     label = f"RZSM ({depths[0]:g}–{depths[-1]:g} cm)" if depths else "RZSM"
@@ -275,7 +392,7 @@ def root_zone_moisture(
 
     if bar is not None:
         fig.add_trace(bar, secondary_y=True)
-        fig.update_yaxes(title_text=f"Precipitation (mm {freq}<sup>-1</sup>)",
+        fig.update_yaxes(title_text=f"Precipitation ({_precip_units(freq)})",
                          secondary_y=True, autorange="reversed", showgrid=False)
     tr = _line(d.index, d["_rz"], label, RZ, width=1.8)
     fig.add_trace(tr, secondary_y=False) if bar is not None else fig.add_trace(tr)
@@ -386,7 +503,7 @@ def precipitation(
     bar.marker.color = RAIN
     fig.add_trace(bar, secondary_y=False) if cumulative else fig.add_trace(bar)
     kw = dict(secondary_y=False) if cumulative else {}
-    fig.update_yaxes(title_text=f"Precipitation (mm {freq}<sup>-1</sup>)", **kw)
+    fig.update_yaxes(title_text=f"Precipitation ({_precip_units(freq)})", **kw)
     if cumulative:
         s = df[PRECIP].resample(freq).sum(min_count=1).fillna(0).cumsum()
         fig.add_trace(_line(s.index, s.values, "Cumulative", "#1a5aa8", width=1.8, fmt=".0f"),
@@ -448,121 +565,286 @@ def vpd_temperature(
     return fig
 
 
-def reference_et(
-    df: pd.DataFrame,
-    *,
-    precip: bool = True,
-    cumulative: bool = True,
-    logger: Logger | str | None = None,
-) -> go.Figure:
-    """Daily Makkink reference ET, against rainfall, with the running balance.
-
-    Rain and ET0 are both mm over the same day, so they share one axis and one bar
-    width -- side by side, at the same scale, supply against demand. That is the whole
-    point of the figure and a second y-scale would destroy it.
-
-    The line on the right axis is the running total of `P - ET0` over the window shown.
-    It rises while rain outpaces demand and falls through a dry spell, so the depth of
-    its trough is the accumulated deficit the soil has had to cover. It restarts at the
-    left edge of the window, not on 1 January -- see `climatology(kind="et0_cumulative")`
-    for the year-to-date view.
-    """
-    et0 = _reference_et(df)
-    fig = _panel(_title(logger, "Makkink reference evapotranspiration"), 460,
-                 secondary=cumulative)
-    if et0.empty:
-        return _panel(_title(logger, "Reference ET — no weather station on this logger"),
-                      320)
-
-    rain = None
-    if precip and PRECIP in df.columns and df[PRECIP].notna().any():
-        rain = df[PRECIP].clip(lower=0.0).resample("1D").sum(min_count=1)
-        rain = rain.reindex(et0.index)
-
-    kw = dict(secondary_y=False) if cumulative else {}
-    if rain is not None:
-        fig.add_trace(go.Bar(
-            x=rain.index, y=rain.values, name="Precipitation", marker_color=RAIN,
-            hovertemplate="%{y:.1f} mm<extra>Rain</extra>"), **kw)
-    fig.add_trace(go.Bar(
-        x=et0.index, y=et0.values, name="Reference ET (Makkink)", marker_color=ET0_C,
-        hovertemplate="%{y:.2f} mm<extra>ET<sub>0</sub></extra>"), **kw)
-    fig.update_layout(barmode="group", bargap=0.15, bargroupgap=0.0)
-    fig.update_yaxes(title_text="Water (mm d<sup>-1</sup>)", **kw)
-
-    if cumulative:
-        if rain is not None:
-            balance = (rain.fillna(0.0) - et0).cumsum()
-            fig.add_trace(_line(balance.index, balance.values,
-                                "Running P − ET<sub>0</sub>", RZ, width=1.8, fmt=".0f"),
-                          secondary_y=True)
-            fig.update_yaxes(title_text="Cumulative P − ET<sub>0</sub> (mm)",
-                             secondary_y=True, showgrid=False)
-            fig.add_hline(y=0, line=dict(color=AXIS, width=1, dash="dot"),
-                          secondary_y=True)
-        else:
-            run = et0.cumsum()
-            fig.add_trace(_line(run.index, run.values, "Cumulative ET<sub>0</sub>",
-                                ET0_CUM, width=1.8, fmt=".0f"), secondary_y=True)
-            fig.update_yaxes(title_text="Cumulative ET<sub>0</sub> (mm)",
-                             secondary_y=True, showgrid=False)
-    return fig
-
-
-def water_limited_et(
+def evapotranspiration(
     df: pd.DataFrame,
     *,
     met: pd.DataFrame | None = None,
     ref: str | None = None,
-    p: float = 0.5,
     crop_coefficient: float = 1.0,
+    out: pd.DataFrame | None = None,
+    row_notes: bool = True,
     logger: Logger | str | None = None,
 ) -> go.Figure:
-    """Actual ET against reference ET, with the water stress factor behind it.
+    """The whole ET story in four stacked rows on one x axis.
 
-    Two bars a day: what the atmosphere asked (ET0, pale) and what the soil could
-    supply (WSF * Kc * ET0, solid). The gap between them *is* the water stress, so it
-    is drawn as a gap rather than as a third series. The line on the right axis is the
-    water stress factor itself -- FAO-56 calls it Ks, which the code keeps as a column
-    name; every label the reader sees says WSF -- from 1 (the profile can meet any demand) to 0 (wilting point).
+    Row 1, mm per day: rain beside evaporation. The evaporation bar carries ETo pale
+    behind ETa solid, because what the soil supplied is a *part* of what the atmosphere
+    asked, not a rival to it -- so the exposed pale head is the water stress, read
+    straight off the bar. Rain and ET are both mm over the same day, which is what
+    earns them one axis.
+
+    Row 2: WSF, the water stress factor itself, 0 to 1.
+
+    Row 3, mm: cumulative ETo against cumulative ETa. Both only rise, and the widening
+    gap between them is the evaporation the soil could not supply -- the running total
+    of the pale heads in row 1.
+
+    Row 4, mm: the two running balances, cumulative `P - ETo` against cumulative
+    `P - ETa`. These cross zero, which is why they are not on row 3 with the totals that
+    cannot. Every running total restarts at the left edge of the window rather than on
+    1 January; `climatology` has the year-to-date view.
+
+    Four rows and no second y axis anywhere: each row carries one quantity at one
+    scale, so nothing in the figure can be read as an alignment that is not there.
+
+    Pass `out` to reuse a frame `stress.actual_et` has already produced. A caller
+    redrawing on a slider wants that: evaluating the sigmoid over a quarter-million rows
+    again, to change a coefficient the last row is merely multiplied by, is what makes an
+    interactive control feel broken. `crop_coefficient` is then not used to *compute*
+    anything -- the caller has already applied it -- but it is still read, because a
+    figure drawn at Kc = 1.3 has to say so. It used to be silently dead on this path, so
+    a reader dragging a Kc slider watched every ETa number move with nothing anywhere
+    recording why.
+
+    `row_notes` puts a short caption above each row saying what it shows. Four y-axis
+    units tell a reader what is measured but not what they are looking at.
     """
     from .stress import actual_et
 
     ref = ref if ref is not None else logger
-    try:
-        out = actual_et(df, met, ref=_ref_name(ref) if ref is not None else None,
-                        p=p, crop_coefficient=crop_coefficient)
-    except (FileNotFoundError, ValueError) as exc:
-        return _panel(_title(logger, f"Actual ET — {exc}".split(".")[0]), 320)
+    name = _ref_name(ref) if ref is not None else None
+    if out is None:
+        try:
+            out = actual_et(df, met, ref=name, crop_coefficient=crop_coefficient)
+        except (FileNotFoundError, ValueError) as exc:
+            return _panel(_title(logger, f"Evapotranspiration — {exc}".split(".")[0]), 320)
     if out.empty:
-        return _panel(_title(logger, "Actual ET — needs a weather station and soil "
-                                     "parameters"), 320)
+        return _panel(_title(logger, "Evapotranspiration — needs a weather station "
+                                     "and soil parameters"), 320)
 
-    fig = _panel(_title(logger, "Actual evapotranspiration and water stress"), 470,
-                 secondary=True)
-    fig.add_trace(go.Bar(
-        x=out.index, y=out["et0"], name="Reference ET (demand)",
-        marker_color="rgba(237,161,0,0.32)", marker_line_width=0,
-        hovertemplate="%{y:.2f} mm<extra>ET<sub>0</sub></extra>"), secondary_y=False)
-    fig.add_trace(go.Bar(
-        x=out.index, y=out["et"], name="Actual ET (supplied)", marker_color=ET0_CUM,
-        marker_line_width=0,
-        hovertemplate="%{y:.2f} mm<extra>ET</extra>"), secondary_y=False)
-    # Overlaid, not grouped: actual ET is a *part* of the demand, so it belongs inside
-    # the same bar rather than beside it.
-    fig.update_layout(barmode="overlay", bargap=0.15)
-    fig.update_yaxes(title_text="ET (mm d<sup>-1</sup>)", secondary_y=False)
+    # Rain comes from whichever frame carries the gauge -- the station's, when the soil
+    # logger has none of its own.
+    wx = met if met is not None and _has_data(met, PRECIP) else df
+    rain = (wx[PRECIP].clip(lower=0.0).resample("1D").sum(min_count=1).reindex(out.index)
+            if _has_data(wx, PRECIP) else None)
 
-    fig.add_trace(_line(out.index, out["ks"], "WSF (water stress factor)", RZ,
-                        width=1.6, fmt=".2f"), secondary_y=True)
-    fig.update_yaxes(title_text="WSF (—)", secondary_y=True, range=[0, 1.05],
-                     showgrid=False)
-    threshold = 1.0 - p
-    fig.add_hline(y=threshold, line=dict(color=AXIS, width=1, dash="dot"),
-                  secondary_y=True,
-                  annotation_text=f"stress begins (p = {p:g})",
-                  annotation_position="right",
-                  annotation_font=dict(family=FONT, size=FS_NOTE, color=MUTED))
+    # Kc never changes a label at 1, so the data tabs are untouched; off 1 it is stamped
+    # on every ETa entry, and a downloaded PNG then carries its own assumption instead of
+    # passing for the default figure.
+    kc_note = "" if abs(crop_coefficient - 1.0) < 1e-9 else f", K<sub>c</sub> {crop_coefficient:g}"
+
+    fig = make_subplots(rows=5, cols=1, shared_xaxes=True,
+                        row_heights=[0.26, 0.14, 0.13, 0.235, 0.235],
+                        vertical_spacing=0.046 if row_notes else 0.030)
+    _style(fig, _title(logger, "Evapotranspiration and the water balance"),
+           1040 if row_notes else 980)
+    # Seven series wrap the horizontal legend onto a second line, which then climbs into
+    # the title. Put the title above the legend and give both room.
+    # Eight series wrap the horizontal legend onto three lines, which then climbs into
+    # the title above it and, with `row_notes`, collides with row 1's caption below it.
+    # The top margin has to hold title + legend + that caption.
+    # Eight series wrap the horizontal legend onto three lines. Anchor it to the
+    # *container* top, not the plot area's: anchored to the plot area it moves down with
+    # every increase in the top margin, so it kept landing on row 1's caption no matter
+    # how much room was made for it.
+    fig.update_layout(margin=dict(t=176 if row_notes else 136),
+                      title=dict(y=0.985, yanchor="top"),
+                      # Plotly flips the legend to reversed order as soon as a trace
+                      # carries a fill, which put row 4's entries above row 1's. Pin it
+                      # so the legend reads in the order the rows do.
+                      legend_traceorder="normal",
+                      legend=dict(xref="container", x=0.055, xanchor="left",
+                                  yref="container", y=0.955, yanchor="top"))
+
+    # -- row 1: the daily fluxes
+    #
+    # Rain stays bars -- it is a total over an interval, and a line between samples
+    # would imply it was raining continuously. ETo and ETa are daily *rates* and are
+    # drawn as lines, because the question asked of them is how they move and how far
+    # apart they are, which two overlaid bars never let you trace. The band between the
+    # lines is filled: that area *is* the demand the soil did not meet, so the reading
+    # the stacked bars gave is kept, and made continuous.
+    eta_line = _line(out.index, out["et"], f"ET<sub>a</sub> (supplied{kc_note})",
+                     ET0_CUM, width=1.8, fmt=".2f")
+    fig.add_trace(eta_line, row=1, col=1)
+    eto_line = _line(out.index, out["et0"], "ET<sub>o</sub> (demand)", ET0_C,
+                     width=1.6, dash="dot", fmt=".2f")
+    # `tonexty` fills to the trace added immediately before it, so ETa goes in first.
+    eto_line.update(fill="tonexty", fillcolor="rgba(237,161,0,0.22)")
+    fig.add_trace(eto_line, row=1, col=1)
+    fig.update_yaxes(title_text="ET (mm/day)", rangemode="tozero", row=1, col=1)
+
+    # -- row 2: rain, on its own scale
+    #
+    # It used to share row 1 with the two ET series, which is what the shared-axis
+    # argument asked for -- both are mm over the same day, so one scale let you read
+    # supply against demand directly. That worked while everything was bars. It stops
+    # working the moment ET is a line: one 23 mm storm sets the axis and the ET curves,
+    # which never pass 5, are squashed into the bottom fifth of the row and effectively
+    # disappear. Adjacent rows in the same units keep the comparison readable across,
+    # and cost only that one rain day is no longer *beside* the ET it soaked.
+    if rain is not None:
+        fig.add_trace(go.Bar(
+            x=rain.index, y=rain.values, name="Rain", marker_color=RAIN,
+            marker_line_width=0,
+            hovertemplate="%{y:.1f} mm<extra>Rain</extra>"), row=2, col=1)
+        fig.update_layout(bargap=0.2)
+        fig.update_yaxes(title_text="Rain (mm/day)", rangemode="tozero", row=2, col=1)
+    else:
+        fig.update_yaxes(title_text="Rain — no gauge", row=2, col=1)
+
+    # -- row 2: the stress factor
+    fig.add_trace(_line(out.index, out["wsf"], "WSF", RZ, width=1.6, fmt=".2f"),
+                  row=3, col=1)
+    fig.update_yaxes(title_text="WSF (—)", range=[0, 1.02], row=3, col=1)
+
+    # -- row 3: the two running ET totals, in the same two shades as the bars above
+    for col, label, colour in (("et0", "Cumulative ET<sub>o</sub>", ET0_C),
+                               ("et", f"Cumulative ET<sub>a</sub>{kc_note}", ET0_CUM)):
+        run = out[col].cumsum()
+        fig.add_trace(_line(run.index, run.values, label, colour, width=1.8, fmt=".0f"),
+                      row=4, col=1)
+    fig.update_yaxes(title_text="Cumulative ET (mm)", rangemode="tozero", row=4, col=1)
+
+    # -- row 4: the two running balances. Dashed for the demand, solid for what the soil
+    # actually supplied -- the same pale/solid reading as the bars, in a mark that cannot
+    # be drawn pale without disappearing.
+    if rain is not None:
+        filled = rain.fillna(0.0)
+        for col, label, colour, dash in (
+                ("et0", "P − ET<sub>o</sub>", RAIN, "dash"),
+                ("et", "P − ET<sub>a</sub>", RAIN_CUM, None)):
+            run = (filled - out[col]).cumsum()
+            fig.add_trace(_line(run.index, run.values, label, colour,
+                                width=1.8, dash=dash, fmt=".0f"), row=5, col=1)
+        fig.add_hline(y=0, line=dict(color=AXIS, width=1, dash="dot"), row=5, col=1)
+        fig.update_yaxes(title_text="Cumulative<br>P − ET (mm)", row=5, col=1)
+    else:
+        fig.update_yaxes(title_text="P − ET — no gauge", row=5, col=1)
+
+    for row in (1, 2, 3, 4):
+        fig.update_xaxes(showticklabels=False, row=row, col=1)
+
+    if row_notes:
+        # Anchored to each row's own domain, just above its top edge, so they sit in the
+        # gap `vertical_spacing` opened for them and never over data.
+        notes = ("what the atmosphere asked, what the soil gave, and the gap between",
+                 "what fell",
+                 "the stress factor behind that gap",
+                 "the same two ET series, added up",
+                 "rain minus each, added up")
+        for row, note in enumerate(notes, start=1):
+            axis = "y domain" if row == 1 else f"y{row} domain"
+            fig.add_annotation(
+                x=0, xref="x domain", y=1.0, yref=axis, yshift=13,
+                text=note, showarrow=False, xanchor="left", yanchor="bottom",
+                font=dict(family=FONT, size=FS_NOTE, color=MUTED))
+    return fig
+
+
+def limit_key(theta_sat: float, theta_fc: float, theta_r: float) -> list[dict]:
+    """The four soil marks, wettest first: symbol, plain meaning, value, colour.
+
+    The wording and the colours live here so the figure, the key printed under it and
+    the dotted lines on the timeseries panels cannot drift apart. The app renders this;
+    `wsf_explorer` draws the lines for the same four values in the same four colours.
+    """
+    return [
+        {"symbol": "θ<sub>s</sub>", "label": "saturation",
+         "meaning": "every pore full", "value": theta_sat, "colour": THETA_SAT_C},
+        {"symbol": "θ<sub>fc</sub>", "label": "field capacity",
+         "meaning": "what it holds against gravity", "value": theta_fc,
+         "colour": THETA_FC_C},
+        {"symbol": "θ<sub>c</sub>", "label": "stress begins",
+         "meaning": "halfway from field capacity to residual",
+         "value": 0.5 * (theta_fc + theta_r), "colour": THETA_HALF_C},
+        {"symbol": "θ<sub>r</sub>", "label": "residual",
+         "meaning": "water it never gives up", "value": theta_r,
+         "colour": THETA_R_C},
+    ]
+
+
+def wsf_explorer(
+    theta_sat: float,
+    theta_fc: float,
+    theta_r: float,
+    *,
+    theta: float | None = None,
+    steepness: float = 100.0,
+    title: str | None = None,
+    annotate: bool = False,
+) -> go.Figure:
+    """The water stress function itself, with the four soil limits marked.
+
+    A teaching figure: WSF against soil water content over `0 .. theta_sat`, with the
+    four limits drawn where they fall.
+
+    It used to carry a grey histogram of the water contents this probe has actually
+    reached. That is gone: its bars were relative frequency scaled to fit *the WSF
+    axis*, so a bar reaching 0.8 read as "WSF 0.8" and meant "this bin is 80% as common
+    as the commonest". One quantity per axis, and in the one figure whose job is to
+    teach that axis, most of all.
+
+    The limits are **coloured vertical lines and nothing else**; what each one means
+    belongs in a key under the figure, which `limit_key` supplies and the app renders.
+    Four multi-line captions inside a plot this narrow fought each other and the curve.
+    `annotate=True` puts them back for a standalone figure that has no key beneath it.
+
+    The one caption that stays inside either way is the arrow at the midpoint reading
+    "stress begins". It is not a property of the soil like the other three; it is a
+    reading *of this curve*, and an arrow pointing at the crossing says "here" in a way
+    no legend entry can.
+    """
+    from .stress import stress_factor
+
+    x = np.linspace(0.0, max(theta_sat, theta_fc) * 1.02, 400)
+    y = stress_factor(x, theta_fc=theta_fc, theta_r=theta_r, theta_sat=theta_sat,
+                      steepness=steepness)
+
+    fig = _panel(title or "Water stress function", 460)
+
+    fig.add_trace(_line(x, y, "WSF", INK, width=2.2, fmt=".3f"))
+
+    marks = limit_key(theta_sat, theta_fc, theta_r)
+    half = marks[2]["value"]
+    span = float(x[-1] - x[0]) or 1.0
+    for i, m in enumerate(marks):
+        stress = m["label"] == "water stress begins"
+        fig.add_vline(x=m["value"], line=dict(color=m["colour"], width=1.8,
+                                              dash="dot" if stress else "solid"))
+        if not annotate or stress:
+            continue
+        near_right = (m["value"] - x[0]) / span > 0.72
+        fig.add_annotation(
+            x=m["value"], xref="x", y=1.0 if i % 2 == 0 else 0.84, yref="paper",
+            text=f"{m['symbol']} — {m['label']}<br><i>{m['meaning']}</i>"
+                 f"<br>{m['value']:.3f}",
+            showarrow=False, xanchor="right" if near_right else "left",
+            xshift=-5 if near_right else 5, yanchor="top", align="left",
+            font=dict(family=FONT, size=FS_NOTE, color=m["colour"]))
+
+    # The arrow stays whatever `annotate` says: see the docstring.
+    fig.add_annotation(
+        x=half, y=0.5, xref="x", yref="y",
+        text=f"<b>stress begins</b><br>{half:.3f}",
+        showarrow=True, arrowhead=2, arrowsize=1.1, arrowwidth=1.8,
+        arrowcolor=THETA_HALF_C, ax=0, ay=-58, xanchor="center", align="center",
+        font=dict(family=FONT, size=FS_NOTE, color=THETA_HALF_C))
+
+    if theta is not None:
+        wsf = float(stress_factor(np.array([theta]), theta_fc=theta_fc,
+                                  theta_r=theta_r, theta_sat=theta_sat,
+                                  steepness=steepness)[0])
+        fig.add_trace(go.Scatter(
+            x=[theta], y=[wsf], mode="markers+text", name="this soil now",
+            marker=dict(size=13, color=RZ, line=dict(color=SURFACE, width=2)),
+            text=[f"  WSF {wsf:.2f}"], textposition="middle right",
+            textfont=dict(family=FONT, size=FS_LEGEND, color=RZ),
+            hovertemplate=f"θ {theta:.3f} → WSF {wsf:.3f}<extra></extra>"))
+
+    fig.update_xaxes(title_text="Soil water content, θ (m<sup>3</sup> m<sup>-3</sup>)",
+                     range=[float(x[0]), float(x[-1])])
+    fig.update_yaxes(title_text="WSF (—)", range=[0, 1.06])
     return fig
 
 
@@ -573,13 +855,12 @@ def weekly_balance(
     ref: str | None = None,
     year: int | None = None,
     crop_coefficient: float = 1.0,
-    p: float = 0.5,
     logger: Logger | str | None = None,
 ) -> go.Figure:
     """Week by week from 1 January: rain, the demand, what evaporated, what was left.
 
-    Top row, three upright bars a week: rain, reference ET (what the atmosphere
-    asked) and actual ET (what the soil could supply). Reading them side by side is
+    Top row, three upright bars a week: rain, ETo (what the atmosphere asked)
+    and ETa (what the soil could supply). Reading them side by side is
     the whole point -- the gap between the two ET bars is the water stress, and
     whether rain clears them is whether the week paid for itself.
 
@@ -596,7 +877,7 @@ def weekly_balance(
     ref = ref if ref is not None else logger
     try:
         out = actual_et(df, met, ref=_ref_name(ref) if ref is not None else None,
-                        p=p, crop_coefficient=crop_coefficient)
+                        crop_coefficient=crop_coefficient)
     except (FileNotFoundError, ValueError) as exc:
         return _panel(_title(logger, f"Weekly water balance — {exc}".split(".")[0]), 320)
     if out.empty:
@@ -639,15 +920,15 @@ def weekly_balance(
 
     # Two bars a week, the pair centred on the week they belong to: rain on the left,
     # evaporation on the right. The two ET terms share that one bar in two shades --
-    # actual ET is *part* of the demand, not a rival to it, so the exposed pale head
+    # ETa is *part* of the demand, not a rival to it, so the exposed pale head
     # is the water stress, read directly off the bar. Explicit offsets rather than
     # Plotly's grouping, because the widths vary: a part-finished week is drawn narrow,
     # and grouped bars would then sit off its centre.
     half = width / 2.0
     for col, name, colour, opacity, offset in (
             ("precip", "rain", RAIN, 1.0, -half),
-            ("et0", "reference ET (demand)", ET0_C, 0.40, 0.0),
-            ("et", "actual ET (supplied)", ET0_CUM, 1.0, 0.0)):
+            ("et0", "ET<sub>o</sub> (demand)", ET0_C, 0.40, 0.0),
+            ("et", "ET<sub>a</sub> (supplied)", ET0_CUM, 1.0, 0.0)):
         fig.add_trace(go.Bar(
             x=weekly.index, y=weekly[col], width=half, offset=offset, name=name,
             marker_color=colour, opacity=opacity, marker_line_width=0,
@@ -668,6 +949,341 @@ def weekly_balance(
     fig.update_xaxes(showticklabels=False, row=1, col=1)
     fig.update_yaxes(title_text="mm per week", rangemode="tozero", row=1, col=1)
     fig.update_yaxes(title_text="P − ET<br>(mm per week)", row=2, col=1)
+    return fig
+
+
+#: Basemaps the map tab can draw. Both are free and need no API key: OpenStreetMap is
+#: MapLibre's own built-in style, and the satellite layer is an Esri raster tile source
+#: drawn under the markers on a blank ground. A Google basemap would need a billing
+#: account and a secret in every deployment, which this app deliberately has none of.
+#: Satellite first, and it is the default: on a food-forest plot the tree rows and the
+#: field edges are what tell you where a logger is, and a street map of farmland is
+#: mostly blank.
+BASEMAPS = {"satellite": "Satellite (Esri)", "street": "OpenStreetMap"}
+
+# Both basemaps are declared as explicit raster layers over a blank ground rather than
+# by Plotly's built-in style name. The built-in "open-street-map" style supplies no
+# attribution string, and MapLibre's attribution control then prints a literal
+# `undefined` in the corner of the map. Declaring the source ourselves is the only way to
+# put our own credit there -- and it costs nothing, since the built-in style fetches these
+# very tiles.
+_OSM_TILES = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+_OSM_CREDIT = "© OpenStreetMap contributors"
+_ESRI_IMAGERY = ("https://server.arcgisonline.com/ArcGIS/rest/services/"
+                 "World_Imagery/MapServer/tile/{z}/{y}/{x}")
+_ESRI_CREDIT = "Esri · Maxar · Earthstar Geographics"
+
+MAP_LIVE = "#1c5cab"
+MAP_OFFLINE = "#9a9a9a"
+
+
+def logger_map(
+    loggers,
+    *,
+    selected=None,
+    basemap: str = "satellite",
+    height: int = 420,
+) -> go.Figure:
+    """Every logger on a basemap, for picking one without knowing its serial.
+
+    Nobody remembers `z6-21176`, so the map is a real selector rather than decoration:
+    the hover names the device, its field and what it actually reports, and the trace
+    carries each serial in `customdata` so a click can be resolved back to a logger.
+
+    Offline loggers are drawn grey rather than hidden -- `K2_ATMOS_SMST` being silent
+    is information, and leaving it off the map would just raise the question of where
+    it went.
+
+    Two details exist to keep the word `undefined` off the map, which is what a reader
+    was seeing. Both basemaps declare their tiles and their credit explicitly (see
+    `_OSM_TILES` above), because Plotly's built-in style name carries no attribution and
+    MapLibre's corner control prints `undefined` when it has none. And the hover string
+    is assembled here into `text` rather than left to the browser to build out of
+    `%{customdata[i]}`.
+
+    None of this is visible from `write_image`: that uses a different renderer from the
+    one Streamlit ships, so a PNG rendered here proves nothing about what the app draws.
+    """
+    loggers = list(loggers)
+    if not loggers:
+        return _panel("No loggers to map", height)
+
+    chosen = getattr(selected, "serial", selected)
+    live = [lg for lg in loggers if not lg.is_offline]
+    off = [lg for lg in loggers if lg.is_offline]
+
+    fig = go.Figure()
+    for group, name, colour in ((live, "reporting", MAP_LIVE),
+                                (off, "offline", MAP_OFFLINE)):
+        if not group:
+            continue
+        fig.add_trace(go.Scattermap(
+            lat=[lg.latitude for lg in group],
+            lon=[lg.longitude for lg in group],
+            mode="markers",
+            name=name,
+            # The hover string is built here rather than assembled in the browser from
+            # `%{customdata[i]}`: one less thing that can come back `undefined` if index
+            # handling differs between renderers. `customdata` still carries the serial,
+            # because that is what a click has to resolve back to a logger.
+            customdata=[[lg.serial] for lg in group],
+            text=[f"<b>{lg.name}</b><br>{lg.serial}<br>{lg.field_name}"
+                  f"<br>reports: {', '.join(lg.reporting_measures()) or 'nothing'}"
+                  for lg in group],
+            hovertemplate="%{text}<extra></extra>",
+            marker=dict(
+                size=[20 if lg.serial == chosen else 12 for lg in group],
+                color=colour,
+                opacity=[1.0 if lg.serial == chosen else 0.85 for lg in group],
+            ),
+        ))
+
+    # Frame the whole network, then lean towards the selection so a click zooms to its
+    # field instead of leaving the reader to find which dot changed.
+    lats = [lg.latitude for lg in loggers]
+    lons = [lg.longitude for lg in loggers]
+    pick = next((lg for lg in loggers if lg.serial == chosen), None)
+    if pick is not None:
+        centre, zoom = dict(lat=pick.latitude, lon=pick.longitude), 15.5
+    else:
+        centre = dict(lat=(min(lats) + max(lats)) / 2,
+                      lon=(min(lons) + max(lons)) / 2)
+        # The three sites are ~40 km apart; one zoom level shows them all.
+        zoom = 8
+
+    tiles, credit = ((_OSM_TILES, _OSM_CREDIT) if basemap == "street"
+                     else (_ESRI_IMAGERY, _ESRI_CREDIT))
+    fig.update_layout(map=dict(
+        center=centre, zoom=zoom, style="white-bg",
+        layers=[dict(sourcetype="raster", source=[tiles], below="traces",
+                     sourceattribution=credit)],
+    ))
+    _style(fig, None, height)
+    fig.update_layout(
+        margin=dict(l=0, r=0, t=0, b=0), clickmode="event+select",
+        # `_style` sets "x unified", which is meaningless on a map: there is no shared x
+        # to gather points along.
+        hovermode="closest",
+        legend=dict(orientation="h", yanchor="bottom", y=0.01, xanchor="left", x=0.01,
+                    bgcolor="rgba(255,255,255,0.75)", font=dict(size=FS_NOTE)),
+    )
+    return fig
+
+
+def _wedge(x_centre: float, width: float, y_top: float, y_bottom: float) -> str:
+    """SVG path for a downward arrow of a given width: a shaft with a head at the foot."""
+    half = max(width, 0.6) / 2.0
+    head = min(4.5, (y_top - y_bottom) * 0.34)
+    neck = y_bottom + head
+    return (f"M {x_centre - half},{y_top} L {x_centre + half},{y_top} "
+            f"L {x_centre + half},{neck} L {x_centre + half * 1.75},{neck} "
+            f"L {x_centre},{y_bottom} L {x_centre - half * 1.75},{neck} "
+            f"L {x_centre - half},{neck} Z")
+
+
+def _wsf_shade(wsf: float) -> str:
+    """Dark red at no water, deep blue at full -- the depth ramp's own two ends."""
+    lo = (0x7f, 0x00, 0x00)
+    hi = (0x0d, 0x2a, 0x6b)
+    mid = (0xd4, 0x45, 0x6f)
+    t = min(max(float(wsf), 0.0), 1.0)
+    a, b, u = (lo, mid, t / 0.5) if t < 0.5 else (mid, hi, (t - 0.5) / 0.5)
+    return "#%02x%02x%02x" % tuple(round(a[i] + (b[i] - a[i]) * u) for i in range(3))
+
+
+def water_story(
+    info: dict,
+    *,
+    theta: float,
+    eto: float,
+    kc: float = 1.0,
+    narrow: bool = False,
+    height: int | None = None,
+    scale_mm: float = 8.0,
+    title: str | None = "Where today's water goes",
+) -> go.Figure:
+    """The whole water story as one picture.
+
+    The atmosphere asks for a certain amount of water; the soil can meet only part of
+    it; what gets through is what the plants actually use; the rest is a shortfall you
+    would have to irrigate. Three sections of prose said the same thing and made it look
+    like three unrelated calculations. It is one sequence, and the only honest way to
+    show that is to draw it.
+
+    Two columns. The left one is the chain, running downwards because that is the
+    direction the water goes: demand, then the gate the soil opens, then what came
+    through beside what did not. The right one is the profile that gate is made of, with
+    the water it would take to refill it standing beside it.
+
+    `narrow=True` stacks those two instead, chain above soil, and makes the figure
+    taller. Side by side is unreadable at phone width -- the columns run into each other
+    -- and this is a drawing, so it cannot be rescued by shrinking the type the way a
+    chart can.
+
+    Every millimetre quantity -- ETo, ETa, the shortfall -- shares `scale_mm`, so their
+    widths are comparable by eye. WSF and the soil fills are fractions, drawn as fills
+    rather than arrows, so nothing can be read as a flux that is not one. Colours are the
+    app's own throughout: a reader arrives already knowing what they mean.
+
+    `info` is a `stress.root_zone_limits` dict; the arithmetic is the irrigation
+    calculator's and is not duplicated here.
+    """
+    from .stress import stress_factor
+
+    limits, depths = info["limits"], info["depths"]
+    thick = info["thicknesses"]
+    wsf = float(stress_factor(theta, theta_fc=info["theta_fc"],
+                              theta_r=info["theta_r"], theta_sat=info["theta_sat"]))
+    demand = max(kc * eto, 0.0)
+    eta = wsf * demand
+    short = max(demand - eta, 0.0)
+    refill = sum(max(0.0, limits[d]["theta_fc"] - theta) * L * 10.0
+                 for d, L in zip(depths, thick))
+    full_store = sum((limits[d]["theta_fc"] - limits[d]["theta_r"]) * L * 10.0
+                     for d, L in zip(depths, thick)) or 1.0
+
+    # Every position below is expressed against these, so `narrow` only moves the two
+    # blocks rather than needing a second copy of the drawing.
+    height = height or ((820 if title is None else 850) if narrow else
+                        (520 if title is None else 550))
+    if narrow:
+        # The chain needs more of the height when stacked: its captions wrap to two
+        # lines there, and at 44 units the arrow labels landed on the closing sentence.
+        cx0, cx1, ctop, cbot = 2.0, 92.0, 100.0, 50.0
+        sx0, sx1, stop, sbot = 2.0, 92.0, 44.0, 4.0
+    else:
+        cx0, cx1, ctop, cbot = 0.0, 52.0, 100.0, 12.0
+        sx0, sx1, stop, sbot = 56.0, 100.0, 100.0, 4.0
+    cw = cx1 - cx0
+
+    fig = go.Figure()
+    _style(fig, title, height, legend=False)
+    # The two block headings sit at the top of their own columns, so the figure needs a
+    # title over both of them or the drawing opens with no statement of what it is.
+    fig.update_layout(margin=dict(l=6, r=6, t=48 if title else 6, b=6),
+                      plot_bgcolor=SURFACE)
+    fig.update_xaxes(visible=False, range=[0, 100], fixedrange=True)
+    fig.update_yaxes(visible=False, range=[0, 100], fixedrange=True)
+
+    shapes, notes = [], []
+
+    def label(x, y, text, *, size=FS_NOTE, color=INK_2, **kw):
+        notes.append(dict(x=x, y=y, text=text, showarrow=False,
+                          font=dict(family=FONT, size=size, color=color), **kw))
+
+    # mm -> arrow width. Capped so a wet day cannot burst the column.
+    def mm(v):
+        return min(max(v, 0.0), scale_mm) / scale_mm * 17.0
+
+    # ================= the chain ===========================================
+    ch = lambda f: cbot + (ctop - cbot) * f       # noqa: E731  fraction of the block
+    label(cx0 + 3, ch(1.00), "<b>THE ATMOSPHERE ASKS</b>", xanchor="left",
+          yanchor="top", color=MUTED)
+    label(cx0 + 3, ch(0.94), f"ET<sub>o</sub> <b>{eto:.1f}</b> mm/day"
+          + (f"  ×  K<sub>c</sub> {kc:g}  =  <b>{demand:.1f}</b>"
+             if abs(kc - 1.0) > 1e-9 else ""),
+          xanchor="left", yanchor="top", size=FS_LEGEND, color=INK)
+    shapes.append(dict(type="path",
+                       path=_wedge(cx0 + cw * 0.5, mm(demand), ch(0.84), ch(0.68)),
+                       fillcolor=ET0_C, opacity=0.45, line_width=0))
+
+    # the gate
+    gate0, gate1 = cx0 + 4, cx1 - 6
+    shapes.append(dict(type="rect", x0=gate0, x1=gate1, y0=ch(0.57), y1=ch(0.65),
+                       line=dict(color=AXIS, width=1, dash="dot"), fillcolor=GRID))
+    if wsf > 0.005:
+        shapes.append(dict(type="rect", x0=gate0, x1=gate0 + (gate1 - gate0) * wsf,
+                           y0=ch(0.57), y1=ch(0.65), line_width=0, fillcolor=RZ))
+    gap = "<br>" if narrow else "  "
+    label(cx0 + 4, ch(0.53), f"<b>THE SOIL CAN MEET</b>{gap}WSF <b>{wsf:.2f}</b> — "
+                             f"{100 * wsf:.0f}% of it",
+          xanchor="left", yanchor="top", color=RZ)
+
+    # what came through, and what did not
+    # The gate caption wraps to two lines when narrow, so the arrows below it start
+    # lower there or the second line lands on the shaft.
+    a_top, a_bot = ch(0.40 if narrow else 0.45), ch(0.26 if narrow else 0.27)
+    shapes.append(dict(type="path",
+                       path=_wedge(cx0 + cw * 0.27, mm(eta), a_top, a_bot),
+                       fillcolor=ET0_CUM, line_width=0))
+    label(cx0 + cw * 0.27, a_bot - 2.5,
+          f"ET<sub>a</sub> <b>{eta:.1f}</b> mm/day<br>the plants get this",
+          xanchor="center", yanchor="top", color=ET0_CUM)
+    if short > 0.01:
+        shapes.append(dict(type="path",
+                           path=_wedge(cx0 + cw * 0.72, mm(short), a_top, a_bot),
+                           fillcolor="rgba(0,0,0,0)",
+                           line=dict(color=ET0_CUM, width=1.4, dash="dot")))
+        label(cx0 + cw * 0.72, a_bot - 2.5,
+              f"<b>{short:.1f}</b> mm/day<br>asked for, not given",
+              xanchor="center", yanchor="top", color=MUTED)
+
+    label(cx0 + 4, ch(0.03 if narrow else 0.08),
+          "The gap between those two is what<br>irrigation would have to cover."
+          if narrow else
+          "The gap between those two is what irrigation would have to cover.",
+          xanchor="left", yanchor="top", color=MUTED)
+
+    # ================= right column: the profile ===========================
+    label(sx0, stop, "<b>THE SOIL IT COMES FROM</b>", xanchor="left", yanchor="top",
+          color=MUTED)
+    # The refill column is the one block with no heading over it -- its only label sat at
+    # the foot, so the top right read as an unlabelled empty box. On the section
+    # heading's own line, right-anchored, where nothing else reaches.
+    label(sx1, stop, "<b>TO REFILL</b>", xanchor="right", yanchor="top", color=MUTED)
+
+    # Proportional to thickness, but with a floor: 2.5 cm against 60 cm would otherwise
+    # be a band too thin to put a word in, and an unreadable row is worse than a
+    # slightly untrue one. The floor is stated in the caption under the figure.
+    top, floor_y = stop - 10.0, sbot + 7.0
+    span = top - floor_y
+    raw = [L / sum(thick) for L in thick]
+    heights = [max(r, 0.09) for r in raw]
+    heights = [h / sum(heights) * span for h in heights]
+
+    x0 = sx0 + (sx1 - sx0) * 0.20
+    x1 = sx0 + (sx1 - sx0) * 0.70
+    y = top
+    for d, L, band in zip(depths, thick, heights):
+        lim = limits[d]
+        wet = min(max(theta / lim["theta_sat"], 0.0), 1.0)
+        layer_wsf = float(stress_factor(theta, theta_fc=lim["theta_fc"],
+                                        theta_r=lim["theta_r"],
+                                        theta_sat=lim["theta_sat"]))
+        shade = _wsf_shade(layer_wsf)
+        shapes.append(dict(type="rect", x0=x0, x1=x1, y0=y - band + 0.8, y1=y,
+                           line=dict(color=GRID, width=1), fillcolor=SURFACE))
+        shapes.append(dict(type="rect", x0=x0, x1=x0 + (x1 - x0) * wet,
+                           y0=y - band + 0.8, y1=y, line_width=0, fillcolor=shade))
+        # A green tick where this layer's own field capacity falls, so the bar reads as
+        # "how far from full" and not merely as a length. Same green as every other
+        # field-capacity mark in the app.
+        at_fc = x0 + (x1 - x0) * min(lim["theta_fc"] / lim["theta_sat"], 1.0)
+        shapes.append(dict(type="line", x0=at_fc, x1=at_fc, y0=y - band + 0.8, y1=y,
+                           line=dict(color=THETA_FC_C, width=1.4)))
+        mid = y - band / 2
+        label(x0 - 2, mid, f"{d} cm", xanchor="right", yanchor="middle")
+        label(x1 + 2, mid, f"{layer_wsf:.2f}", xanchor="left", yanchor="middle",
+              color=shade)
+        y -= band
+    # The key for these bands is printed under the figure by the caller, not inside it:
+    # at this width an in-figure caption ran straight through the WSF column header.
+    label(x1 + 2, top + 3, "WSF", xanchor="left", yanchor="bottom", color=MUTED)
+
+    # what it would take to refill
+    wx0, wx1 = sx1 - 7.0, sx1 - 1.0
+    shapes.append(dict(type="rect", x0=wx0, x1=wx1, y0=floor_y, y1=top,
+                       line=dict(color=GRID, width=1), fillcolor=SURFACE))
+    fill = min(refill / full_store, 1.0) * span
+    if fill > 0.3:
+        shapes.append(dict(type="rect", x0=wx0, x1=wx1, y0=floor_y, y1=floor_y + fill,
+                           line_width=0, fillcolor=RAIN))
+    # Just the number at the foot: the column is headed now, so repeating "to refill"
+    # under it said the same thing twice.
+    label((wx0 + wx1) / 2, floor_y - 1.5, f"<b>{refill:.0f} mm</b>",
+          xanchor="right" if narrow else "center", yanchor="top", color=RAIN_CUM)
+
+    fig.update_layout(shapes=shapes, annotations=notes)
     return fig
 
 
@@ -743,7 +1359,7 @@ def _series_for(df: pd.DataFrame, measure: str, depth: str | None,
         if col not in df.columns or not df[col].notna().any():
             return None
         return _decimate(df[[col]], max_points)[col]
-    rz = root_zone(df, measure, method="trapezoid")
+    rz = root_zone(df, measure)
     return _decimate(rz.to_frame("v"), max_points)["v"]
 
 
@@ -876,7 +1492,7 @@ def compare_variables(
             bar, freq = _rain_bars(df)
             if bar is not None:
                 fig.add_trace(bar, row=i, col=1)
-                fig.update_yaxes(title_text=f"mm {freq}<sup>-1</sup>", row=i, col=1)
+                fig.update_yaxes(title_text=_precip_units(freq), row=i, col=1)
                 continue
         fig.add_trace(_line(d.index, d[c], c, color), row=i, col=1)
         u = units.get(c, "")
@@ -934,7 +1550,7 @@ def seasonal(
             return _panel(_title(logger, f"{column} not available"), 300)
         s, label, unit = df[column].dropna(), column, ""
     else:
-        s = root_zone(df, measure, method="trapezoid").dropna()
+        s = root_zone(df, measure).dropna()
         label = f"Root-zone {measure.replace('_', ' ')}"
         unit = _UNITS.get(measure, "")
     if s.empty:
@@ -962,6 +1578,13 @@ def seasonal(
                       else ramp[idx[i]], width=2.0 if is_now else 1.4),
             hovertemplate="%{x|%d %b} " + str(y) + ": %{y:.3f}<extra></extra>",
         ))
+    # `_style` sets "x unified", which is wrong for a panel whose whole interaction is
+    # "which line am I pointing at". Unified hover gathers *every* trace's point at that
+    # x into one box, so a click reported all of them and the caller took the first --
+    # always the oldest year, never the line under the cursor. "closest" makes hover name
+    # the line you are on and a click return that one point.
+    fig.update_layout(hovermode="closest", clickmode="event+select")
+
     today = pd.Timestamp.now()
     fig.add_vline(x=pd.Timestamp(2000, today.month, today.day).timestamp() * 1000,
                   line=dict(color=AXIS, width=1, dash="dot"),
@@ -980,22 +1603,28 @@ def seasonal(
 #: summary question. The instantaneous state follows.
 CLIMATOLOGY_KINDS = {
     "precip_cumulative": "Cumulative precipitation",
-    "et0_cumulative": "Cumulative reference ET",
+    "et0_cumulative": "Cumulative ETo",
     "rzsm": "Root-zone soil moisture",
-    "ks": "Water stress factor (WSF)",
-    "et_cumulative": "Cumulative actual ET",
-    "balance_cumulative": "Cumulative P − ET₀",
+    "wsf": "Water stress factor (WSF)",
+    "et_cumulative": "Cumulative ETa",
+    # One panel carrying both balances: P - ETo dashed, P - ETa solid, per year. They
+    # were two panels and should not have been -- the gap between the pair *is* the
+    # reading, and putting them on separate axes made the one comparison that matters
+    # the one you could not make.
+    "balance_cumulative": "Cumulative P − ET",
     "vpd_cumulative": "Cumulative vapour pressure deficit",
 }
 
 #: Kinds that need this logger's own weather station. Only four of the fourteen loggers
 #: report met variables, so a caller listing kinds for a soil logger must drop these.
 MET_KINDS = {"precip_cumulative", "et0_cumulative", "balance_cumulative",
-             "et_cumulative", "ks", "vpd_cumulative"}
+             "et_cumulative", "wsf", "vpd_cumulative"}
 
 #: Kinds that also need the site's soil parameters, so they need a `ref` to look the
 #: site up and are skipped when it is missing or the site has not been extracted.
-SOIL_KINDS = {"et_cumulative", "ks"}
+#: `balance_cumulative` is here as well as in MET_KINDS: its P - ETa half needs the
+#: soil, and the panel degrades to the ETo line alone when the soil is missing.
+SOIL_KINDS = {"et_cumulative", "wsf", "balance_cumulative"}
 
 #: A column has to be genuinely instrumented, not merely non-empty, to drive a plot.
 #: z6-21179 carries 92 weather records from a sensor attached for one day in 2023 and
@@ -1019,7 +1648,7 @@ def _climatology_series(df: pd.DataFrame, kind: str, freq: str,
     sm = soil if soil is not None else df
 
     if kind == "rzsm":
-        s = root_zone(sm, "moisture", method="trapezoid").dropna()
+        s = root_zone(sm, "moisture").dropna()
         return (s.resample(freq).mean().dropna(),
                 f"Root-zone soil moisture ({_UNITS['moisture']})", False)
 
@@ -1035,7 +1664,7 @@ def _climatology_series(df: pd.DataFrame, kind: str, freq: str,
             return pd.Series(dtype="float64"), "", True
         if kind == "et0_cumulative":
             daily = _reference_et(wx, freq=freq)
-            ylab = "Cumulative reference ET (mm)"
+            ylab = "Cumulative ETo (mm)"
         else:
             # P - ET0: the climatic water balance. Unlike the other cumulative kinds it
             # goes both ways, so the year-to-date value reads directly as a surplus or a
@@ -1043,7 +1672,7 @@ def _climatology_series(df: pd.DataFrame, kind: str, freq: str,
             if not _has_data(wx, PRECIP):
                 return pd.Series(dtype="float64"), "", True
             daily = _water_balance(wx, freq=freq)["balance"]
-            ylab = "Cumulative P − ET₀ (mm)"
+            ylab = "Cumulative P − ET (mm)"
         if daily.empty:
             return pd.Series(dtype="float64"), "", True
         daily = daily.reindex(
@@ -1051,38 +1680,48 @@ def _climatology_series(df: pd.DataFrame, kind: str, freq: str,
         ).fillna(0.0)
         return daily.groupby(daily.index.year).cumsum(), ylab, True
 
-    if kind in ("et_cumulative", "ks"):
-        # Both come from the same pair -- the station's ET0 and the soil's WSF -- so
-        # they are computed together and the kind only picks which one to return.
+    if kind in ("et_cumulative", "wsf", "balance_a"):
+        # All three come from the same pair -- the station's ETo and the soil's WSF --
+        # so they are computed together and the kind only picks which one to return.
+        # `balance_a` is not a public kind: it is the ETa half of `balance_cumulative`,
+        # which `climatology` asks for separately and draws beside the ETo half.
         # Needs the site's soil parameters, hence `ref`.
+        cumulative = kind != "wsf"
         if ref is None or not (_has_data(wx, RADIATION) and _has_data(wx, AIR_T)):
-            return pd.Series(dtype="float64"), "", kind == "et_cumulative"
-        from .stress import root_zone_stress
+            return pd.Series(dtype="float64"), "", cumulative
+        from .stress import profile_stress
 
         et0 = _reference_et(wx, freq=freq)
         if et0.empty:
-            return pd.Series(dtype="float64"), "", kind == "et_cumulative"
+            return pd.Series(dtype="float64"), "", cumulative
         try:
-            ks, _ = root_zone_stress(sm, ref=_ref_name(ref))
+            wsf, _, _ = profile_stress(sm, ref=_ref_name(ref))
         except (FileNotFoundError, ValueError):
-            return pd.Series(dtype="float64"), "", kind == "et_cumulative"
-        if ks.empty:
-            return pd.Series(dtype="float64"), "", kind == "et_cumulative"
-        daily_ks = ks.resample(freq).mean()
+            return pd.Series(dtype="float64"), "", cumulative
+        if wsf.empty:
+            return pd.Series(dtype="float64"), "", cumulative
+        daily_wsf = wsf.resample(freq).mean()
 
-        if kind == "ks":
+        if kind == "wsf":
             # A state, not an accumulation: 1 means the profile can meet whatever the
-            # atmosphere asks, 0 means it is at wilting point.
-            return daily_ks.dropna(), "Water stress factor, WSF (—)", False
+            # atmosphere asks, 0 means it can meet none of it.
+            return daily_wsf.dropna(), "Water stress factor, WSF (—)", False
 
-        actual = (et0 * daily_ks).dropna()
+        actual = (et0 * daily_wsf).dropna()
         if actual.empty:
             return pd.Series(dtype="float64"), "", True
+        if kind == "balance_a":
+            if not _has_data(wx, PRECIP):
+                return pd.Series(dtype="float64"), "", True
+            rain = wx[PRECIP].clip(lower=0.0).resample(freq).sum(min_count=1)
+            actual = (rain.reindex(actual.index).fillna(0.0) - actual).dropna()
+            ylab = "Cumulative P − ET (mm)"
+        else:
+            ylab = "Cumulative ETa (mm)"
         actual = actual.reindex(
             pd.date_range(actual.index.min(), actual.index.max(), freq=freq)
         ).fillna(0.0)
-        return (actual.groupby(actual.index.year).cumsum(),
-                "Cumulative actual ET (mm)", True)
+        return actual.groupby(actual.index.year).cumsum(), ylab, True
 
     if kind == "vpd_cumulative":
         col = VPD if _has_data(wx, VPD) else VP
@@ -1149,7 +1788,7 @@ def climatology_standing(df: pd.DataFrame, kind: str, *, freq: str = "1D",
         # A percentage of a quantity that changes sign is nonsense: a normal year at
         # -50 mm and this year at -20 mm is 30 mm *less* dry, but reads as "-60%".
         "pct": ((current - median) / median * 100
-                if median and kind != "balance_cumulative" else None),
+                if median and not kind.startswith("balance") else None),
         "years": sorted(int(y) for y in past.index.year.unique()),
         "excluded": sorted(int(y) for y in partial),
     }
@@ -1157,16 +1796,15 @@ def climatology_standing(df: pd.DataFrame, kind: str, *, freq: str = "1D",
 
 def _add_soil_limits(fig: go.Figure, df: pd.DataFrame,
                      ref: Logger | str | None) -> dict:
-    """Dotted field capacity, stress onset and wilting point behind a moisture chart.
+    """The four soil water limits, dotted, behind a moisture chart.
 
-    Weighted over the same depths, by the same method, as the moisture series itself
-    (`stress.root_zone_limits`), so the curve and the lines are commensurable -- a
-    curve touching the lowest line really is this profile at wilting point.
+    Saturation, field capacity, the WSF = 0.5 midpoint and residual water content --
+    thickness-weighted over the same depths as the moisture series itself
+    (`stress.root_zone_limits`), so the curve and the lines are commensurable. A curve
+    crossing the yellow line really is this profile at half stress.
 
-    Three lines, not two: the pair of soil bounds says what the soil can hold, and the
-    one between them says where the plants start to feel it, which is the reading the
-    curve is usually being interrogated for. It is drawn paler because it is derived
-    from a chosen depletion fraction rather than measured off the retention curve.
+    The same four colours mark the same four values in `wsf_explorer`, so a reader who
+    has played with the function there recognises them here without a second legend.
 
     Silent when the site's soil parameters are missing: the moisture curve is still
     worth showing without them. Returns the limits it drew, or `{}`.
@@ -1181,18 +1819,79 @@ def _add_soil_limits(fig: go.Figure, df: pd.DataFrame,
         return {}
     if not info:
         return {}
-    lines = (("theta_fc", "field capacity", LIMIT),
-             ("threshold", f"stress begins (p = {info['p']:g})", LIMIT_SOFT),
-             ("theta_wp", "wilting point", LIMIT))
-    for key, label, colour in lines:
-        # Labelled at the right, inside the plot: the curve's own year runs out at
-        # "today", so the right-hand months are the empty part of the panel. Outside
-        # the axis the text would be clipped by the margin.
-        fig.add_hline(y=info[key], line=dict(color=colour, width=1, dash="dot"),
+    # Same four values, same four colours, same words as `limit_key` -- a reader who has
+    # met them in the Understand tab meets them again here unchanged.
+    lines = tuple(
+        (key, f"{m['symbol']} {m['label']}".strip(), m["colour"], "dot")
+        for key, m in zip(("theta_sat", "theta_fc", "theta_half", "theta_r"),
+                          limit_key(info["theta_sat"], info["theta_fc"],
+                                    info["theta_r"]))
+    )
+    for key, label, colour, dash in lines:
+        # All four at the right, in one plain style, labelled inside the plot: the
+        # curve's own year runs out at "today", so there is room there, and outside the
+        # axis the text would be clipped by the margin.
+        fig.add_hline(y=info[key], line=dict(color=colour, width=1, dash=dash),
                       annotation_text=f"{label} {info[key]:.3f}",
                       annotation_position="top right",
                       annotation_font=dict(family=FONT, size=FS_NOTE, color=colour))
+        if key != "theta_half":
+            continue
+        # theta_c additionally gets a short arrow pointing down at its own line: it is
+        # the one mark that says something about the plants rather than the soil.
+        #
+        # Text-less and placed left of the label, deliberately. The bold two-line
+        # caption this replaced was pushed 46 px up from the line, which on these soils
+        # -- where theta_fc sits only ~33 px above -- drove it straight through the
+        # field-capacity label. An 18 px arrow beside the text reaches nothing.
+        fig.add_annotation(
+            x=0.80, xref="paper", y=info[key], yref="y", text="",
+            showarrow=True, arrowhead=2, arrowsize=1.0, arrowwidth=1.6,
+            arrowcolor=colour, ax=0, ay=-18)
     return info
+
+
+def _year_traces(fig, series, *, colour, name, dash, highlight, fmt, click_targets,
+                 current=False, showlegend=True):
+    """One year's line, plus an invisible row of points that a click can land on.
+
+    `current` is the year the reader came for: always black and always bold, whatever
+    is selected. `highlight` is the year they have picked out, drawn bold in
+    `PICKED_YEAR`; every other past year stays faded. Selecting the current year is
+    therefore a no-op on the drawing, which is right -- it was already the bold one.
+
+
+    Plotly only reports a selection when the cursor hits a *point*, and these are
+    `mode="lines"` traces with no points in them -- which is why clicking a year did
+    nothing. The companion trace is markers at roughly weekly spacing carrying the same
+    year in `customdata`. Opacity 0.01 rather than 0: a fully transparent marker is not
+    reliably hit-tested.
+    """
+    x = pd.to_datetime(series.index.dayofyear - 1, unit="D",
+                       origin=pd.Timestamp("2000-01-01"))
+    picked = highlight is not None and int(name) == int(highlight)
+    bold = picked or current
+    tr = _line(x, series.values,
+               str(name),
+               PICKED_YEAR if picked and not current else colour,
+               width=2.8 if bold else 1.3, dash=dash, fmt=fmt)
+    tr.update(opacity=1.0 if bold else 0.34, showlegend=showlegend,
+              customdata=[int(name)] * len(x), legendgroup=str(name))
+    fig.add_trace(tr)
+
+    if click_targets:
+        # Roughly one every three days, so there is a target wherever you point. They
+        # sit *on* the line, so `hoverinfo="skip"` was backwards: it excluded them from
+        # Plotly's hover machinery, which is the same machinery a click runs through.
+        # Naming the year here is the point -- pointing at a line should say which year
+        # it is, click or no.
+        step = max(1, len(x) // 120)
+        fig.add_trace(go.Scatter(
+            x=x[::step], y=series.values[::step], mode="markers",
+            marker=dict(size=16, color=colour, opacity=0.01),
+            customdata=[int(name)] * len(x[::step]),
+            showlegend=False, legendgroup=str(name),
+            hovertemplate=f"<b>{name}</b><br>click to hold this year<extra></extra>"))
 
 
 def climatology(
@@ -1205,19 +1904,28 @@ def climatology(
     ref: str | None = None,
     met: pd.DataFrame | None = None,
     soil: pd.DataFrame | None = None,
+    highlight: int | None = None,
 ) -> go.Figure:
-    """This year against the spread of previous years, on a common calendar.
+    """One line per year on a common calendar, so years can be held against each other.
 
-    One line, one axis, one quantity. The weekly totals that used to ride a second
-    axis here live in `weekly_balance`, where rain and evaporation share a single mm
-    scale instead of a running total being read against a per-week one.
+    There is no min-max band and no median. A band said only "somewhere in here", and a
+    median is not a year anyone can point at -- neither survives the question "is this
+    year tracking 2024 or 2025?". Every year is drawn instead, oldest palest.
 
-    The shaded band is the min-max envelope of every earlier year and the pale line their
-    median, so the current year can be read as wetter or drier, ahead or behind, relative to
-    what is normal for the date. A dotted vertical marks today.
+    `highlight` names the year to bring forward: it is drawn bold and fully opaque and
+    every other year fades, the current year included. With `highlight=None` all years
+    are drawn at full strength. Each line is shadowed by an invisible row of click
+    targets, so the app can offer both a year button and a click on the line itself.
 
-    `kind` is one of CLIMATOLOGY_KINDS. Cumulative kinds restart on 1 January, which is what
-    makes "we are 90 mm behind by this date" a meaningful statement.
+    **A single year is a valid panel.** When the record holds no complete earlier year --
+    which is the case for all three TEROS21+TEROS12 loggers -- this draws that one year
+    up to today rather than refusing. There is nothing to compare against yet, and that
+    is a reason to say so in the title, not to withhold the data.
+
+    `kind` is one of CLIMATOLOGY_KINDS. Cumulative kinds restart on 1 January, which is
+    what makes "we are 90 mm behind by this date" a meaningful statement.
+    `balance_cumulative` is the one two-series kind: P - ETo dashed against P - ETa
+    solid, because the gap between them is the reading.
     """
     if measure is not None and kind == "rzsm" and measure != "moisture":
         # Only moisture is depth-averageable; see process.EXTENSIVE.
@@ -1226,60 +1934,120 @@ def climatology(
     if df.empty:
         return _panel(_title(logger, f"{title} — no data"), 400)
 
-    s, ylab, cumulative = _climatology_series(df, kind, freq,
-                                              ref if ref is not None else logger,
-                                              met, soil)
+    who = ref if ref is not None else logger
+    s, ylab, cumulative = _climatology_series(df, kind, freq, who, met, soil)
     if s.empty:
         return _panel(_title(logger, f"{title} — not available on this logger"), 320)
 
-    # Only complete past years go into the comparison. A year whose record starts in May
-    # accumulates from zero in May and reads as a freakishly dry year, dragging the band
-    # down; one that stops in August leaves a phantom gap. The current year is exempt —
-    # being partial is the whole point of it.
-    newest = s.index.year.max()
-    by_year = s.groupby(s.index.year)
-    partial = {
-        y for y, part in by_year
-        if y != newest
-        and (part.index.min().dayofyear > 15 or part.index.max().dayofyear < 350)
-    }
-    dropped = sorted(partial)
-    s = s[~s.index.year.isin(partial)]
-    if s.empty or s.index.year.nunique() < 2:
-        return _panel(_title(logger, f"{title} — no complete earlier year to compare"), 320)
+    # The second series of the one two-series kind. Missing soil parameters simply leave
+    # the panel with its ETo line, which is still worth drawing.
+    second = None
+    if kind == "balance_cumulative":
+        try:
+            cand, _, _ = _climatology_series(df, "balance_a", freq, who, met, soil)
+        except (FileNotFoundError, ValueError):
+            cand = pd.Series(dtype="float64")
+        second = cand if not cand.empty else None
 
-    past, now = s[s.index.year < newest], s[s.index.year == newest]
-    fig = _panel(_title(logger, f"{title} — {newest} vs previous years"), 470)
+    # Only complete past years go into the comparison. A year whose record starts in May
+    # accumulates from zero in May and reads as a freakishly dry year; one that stops in
+    # August leaves a phantom gap. The current year is exempt -- being partial is the
+    # whole point of it.
+    newest = s.index.year.max()
+
+    def drop_partial(series):
+        if series is None or series.empty:
+            return series, set()
+        bad = {
+            y for y, part in series.groupby(series.index.year)
+            if y != newest
+            and (part.index.min().dayofyear > 15 or part.index.max().dayofyear < 350)
+        }
+        return series[~series.index.year.isin(bad)], bad
+
+    s, partial = drop_partial(s)
+    second, _ = drop_partial(second)
+    dropped = sorted(partial)
+    if s.empty:
+        return _panel(_title(logger, f"{title} — no usable record"), 320)
+
+    years = sorted(int(y) for y in s.index.year.unique())
+    only_one = len(years) == 1
+    heading = f"{title} — {newest} so far" if only_one \
+        else f"{title} — {newest} vs previous years"
+    fig = _panel(_title(logger, heading), 470)
     if dropped:
         fig.add_annotation(
             text=f"{', '.join(str(y) for y in dropped)} excluded — incomplete year",
             showarrow=False, xref="paper", yref="paper", x=1, y=-0.16, xanchor="right",
             font=dict(family=FONT, size=FS_NOTE, color=MUTED))
-        fig.update_layout(margin=dict(l=94, r=94, t=76, b=82))
+        fig.update_layout(margin=dict(b=82))
 
-    if len(past):
-        g = past.groupby(past.index.dayofyear)
-        lo, hi, med = g.min(), g.max(), g.median()
-        x = pd.to_datetime(lo.index - 1, unit="D", origin=pd.Timestamp("2000-01-01"))
-        fig.add_trace(go.Scatter(x=x, y=hi.values, mode="lines", line=dict(width=0),
-                                 showlegend=False, hoverinfo="skip"))
-        fig.add_trace(go.Scatter(
-            x=x, y=lo.values, mode="lines", line=dict(width=0), fill="tonexty",
-            fillcolor="rgba(42,120,214,0.13)",
-            name=f"{past.index.year.min()}–{newest - 1}", hoverinfo="skip"))
-        fig.add_trace(_line(x, med.values, "median", "#86b6ef",
-                            width=1.3, fmt=".1f" if cumulative else ".3f"))
+    fmt = ".1f" if cumulative else ".3f"
+    # Oldest palest, this year always black: the ramp encodes recency, so "the line just
+    # under ours is last year" is readable without the legend. Sampled by position, so a
+    # logger with three years and one with six put the same calendar year at a similar
+    # shade.
+    past = [y for y in years if y != newest]
+    idx = (np.linspace(0, len(PAST_YEARS) - 1, len(past)).round().astype(int)
+           if len(past) > 1 else [len(PAST_YEARS) - 1] * len(past))
+    colours = {y: PAST_YEARS[i] for y, i in zip(past, idx)}
+    colours[newest] = INK
+
+    for year in years:
+        part = s[s.index.year == year]
+        if part.empty:
+            continue
+        pair = second is not None and not second[second.index.year == year].empty
+        # One legend swatch per year, never two. It goes on the solid line where there
+        # is a pair -- P - ETa is the one that says what actually happened.
+        _year_traces(fig, part, colour=colours[year], name=year,
+                     dash="dash" if pair else None, highlight=highlight, fmt=fmt,
+                     click_targets=True, current=year == newest, showlegend=not pair)
+        if pair:
+            _year_traces(fig, second[second.index.year == year], colour=colours[year],
+                         name=year, dash=None, highlight=highlight, fmt=fmt,
+                         click_targets=False, current=year == newest, showlegend=True)
+
+    now = s[s.index.year == newest]
     if len(now):
+        # Where the year currently stands, called out rather than left to the axis.
         x = pd.to_datetime(now.index.dayofyear - 1, unit="D",
                            origin=pd.Timestamp("2000-01-01"))
-        fig.add_trace(_line(x, now.values, str(newest), YEAR_INK, width=2.2,
-                            fmt=".1f" if cumulative else ".3f"))
-        # Where the year currently stands, called out rather than left to the axis.
         fig.add_trace(go.Scatter(
             x=[x[-1]], y=[now.values[-1]], mode="markers", showlegend=False,
-            marker=dict(color=YEAR_INK, size=7, line=dict(color=SURFACE, width=1.5)),
+            marker=dict(color=INK, size=7, line=dict(color=SURFACE, width=1.5)),
             hovertemplate="%{y:.1f}<extra>latest</extra>" if cumulative
             else "%{y:.3f}<extra>latest</extra>"))
+
+    if second is not None and len(now):
+        # Named at the line ends rather than in a footnote under the axis. The reader is
+        # already looking there -- the end of the current year's line is where "how far
+        # has this year got" is read -- so the name meets the eye at the question. A
+        # footnote sat two inches from the thing it described and got skipped.
+        tail = second[second.index.year == newest]
+        pairs = [(now, "P − ET<sub>o</sub>", 14), (tail, "P − ET<sub>a</sub>", -14)]
+        for part, label, shift in pairs:
+            if part.empty:
+                continue
+            at = pd.to_datetime(part.index.dayofyear[-1] - 1, unit="D",
+                                origin=pd.Timestamp("2000-01-01"))
+            # To the *right* of the line end, not on it: the current year stops at
+            # "today", so everything past that is open ground, and a label sitting on
+            # its own curve is harder to read than one beside it.
+            fig.add_annotation(
+                x=at, y=float(part.values[-1]), xref="x", yref="y",
+                text=f"<b>{label}</b>", showarrow=False,
+                xanchor="left", xshift=9, yshift=shift,
+                bgcolor="rgba(255,255,255,0.72)", borderpad=2,
+                font=dict(family=FONT, size=FS_NOTE, color=INK))
+
+    # `_style` sets "x unified", which is wrong for a panel whose whole interaction is
+    # "which line am I pointing at". Unified hover gathers *every* trace's point at that
+    # x into one box, so a click reported all of them and the caller took the first --
+    # always the oldest year, never the line under the cursor. "closest" makes hover name
+    # the line you are on and a click return that one point.
+    fig.update_layout(hovermode="closest", clickmode="event+select")
 
     today = pd.Timestamp.now()
     fig.add_vline(x=pd.Timestamp(2000, today.month, today.day).timestamp() * 1000,
@@ -1289,12 +2057,10 @@ def climatology(
     fig.update_xaxes(tickformat="%b", dtick="M1")
     fig.update_yaxes(title_text=ylab,
                      range=[0, 0.6] if kind == "rzsm"
-                     else [0, 1.02] if kind == "ks" else None)
+                     else [0, 1.02] if kind == "wsf" else None)
     if kind == "rzsm":
-        # The two lines that turn a moisture curve into a statement about the plants:
-        # water is held between them, and nothing below the lower one is available.
-        _add_soil_limits(fig, soil if soil is not None else df,
-                         ref if ref is not None else logger)
+        # The lines that turn a moisture curve into a statement about the plants.
+        _add_soil_limits(fig, soil if soil is not None else df, who)
     if kind == "balance_cumulative":
         # This one crosses zero, and which side of it the year sits on is the reading.
         fig.add_hline(y=0, line=dict(color=AXIS, width=1, dash="dot"))

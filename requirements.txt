@@ -1,6 +1,10 @@
 pandas>=2.0
 numpy>=1.24
-plotly>=5.18
-streamlit>=1.30
+# go.Scattermap and layout.map (the non-deprecated map trace) arrived in 5.24, and
+# legend.xref/yref -- which the compact layout anchors the legend with -- in 5.21.
+plotly>=5.24
+# st.segmented_control (the period pills and the basemap switch), st.fragment, and
+# width="stretch" on widgets. Developed and tested against 1.59.
+streamlit>=1.40
 pyarrow>=14
 pyyaml>=6
