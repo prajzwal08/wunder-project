@@ -63,29 +63,55 @@ def read_current(
     *,
     directory: Path | None = None,
     top_up: bool = True,
+    report: dict | None = None,
 ) -> pd.DataFrame:
     """Published series, extended to now from the API.
 
     This is what a deployment without a local cache should call: the bulk arrives from disk
     instantly, and only the tail since the last published timestamp crosses the network.
+
+    **A failed top-up still returns the snapshot, but it no longer does so silently.**
+    Stale data does beat no data, which is why the exception is swallowed -- but a
+    deployment that cannot reach the API looked exactly like a network whose loggers had
+    all stopped a fortnight ago, and there was nothing anywhere to tell the two apart.
+    Pass a dict as `report` and it is filled in with what happened:
+
+        {"attempted": bool, "ok": bool, "rows": int, "error": str | None,
+         "published_to": Timestamp | None, "now_to": Timestamp | None}
+
+    so a caller can say "showing the published snapshot, live top-up unavailable"
+    instead of showing a fortnight-old chart with no explanation.
     """
+    note = {"attempted": False, "ok": False, "rows": 0, "error": None,
+            "published_to": None, "now_to": None}
+
+    def done(frame):
+        note["now_to"] = frame.index.max() if len(frame) else None
+        if report is not None:
+            report.update(note)
+        return frame
+
     lg = ref if isinstance(ref, Logger) else _logger(ref)
     base = read(lg, directory)
-    if base.empty:
-        return base
-    if not top_up:
-        return base
+    note["published_to"] = base.index.max() if len(base) else None
+    if base.empty or not top_up:
+        return done(base)
 
+    note["attempted"] = True
     try:
         tail = fetch(lg, start=base.index.max() - dt.timedelta(hours=1), cache=False)
-    except Exception:  # noqa: BLE001 -- stale data beats no data
-        return base
+    except Exception as exc:  # noqa: BLE001 -- stale data beats no data
+        note["error"] = f"{type(exc).__name__}: {exc}".split("\n")[0][:200]
+        return done(base)
+
+    note["ok"] = True
+    note["rows"] = len(tail)
     if tail.empty:
-        return base
+        return done(base)
 
     tail = resample(tail, FREQ)
     out = pd.concat([base, tail])
-    return out[~out.index.duplicated(keep="last")].sort_index()
+    return done(out[~out.index.duplicated(keep="last")].sort_index())
 
 
 def build(

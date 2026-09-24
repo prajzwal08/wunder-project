@@ -124,7 +124,17 @@ def load(serial: str, token: int, days: int | None = None) -> pd.DataFrame:
     if HAS_PUBLISHED:
         # Deployment path: the bulk comes off disk instantly and only the tail since the
         # last published timestamp crosses the network.
-        return w.publish.read_current(serial)
+        #
+        # `read_current` returns the snapshot when the live fetch fails -- stale data
+        # beats no data -- so the report is the only way to tell a deployment that
+        # cannot reach the API from a network whose loggers all stopped a fortnight ago.
+        # It goes in session_state rather than on the frame, because this function is
+        # cached and `attrs` do not survive that; on a cache hit the stored report is
+        # simply the last real attempt, which is what the sidebar should be describing.
+        report: dict = {}
+        frame = w.publish.read_current(serial, report=report)
+        st.session_state[f"topup_{serial}"] = report
+        return frame
     df = w.fetch(serial, start="2020-01-01", cache=False)
     return w.resample(df, "30min") if not df.empty else df
 
@@ -491,6 +501,19 @@ st.sidebar.caption(
        else "Published record, topped up live." if HAS_PUBLISHED
        else "Fetched live from the API.")
 )
+
+# A top-up that cannot reach the API used to leave the app showing the committed
+# snapshot with nothing to say why -- which reads as "every logger stopped weeks ago".
+_topup = st.session_state.get(f"topup_{lg.serial}") or {}
+if _topup.get("attempted") and not _topup.get("ok"):
+    _pub = _topup.get("published_to")
+    st.sidebar.warning(
+        "**Live top-up unavailable** — showing the published snapshot"
+        + (f", which ends {_pub:%d %b %Y}" if _pub is not None else "")
+        + ". The API is reachable from the UT network only over plain HTTP; a "
+          "deployment outside it may not get through.\n\n"
+        + f"`{_topup.get('error')}`"
+    )
 
 st.title(lg.name)
 st.caption(f"{lg.serial}  ·  {lg.site_name} — {lg.field_name}  ·  "
