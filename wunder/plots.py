@@ -1070,10 +1070,22 @@ def logger_map(
     return fig
 
 
-def _wedge(x_centre: float, width: float, y_top: float, y_bottom: float) -> str:
-    """SVG path for a downward arrow of a given width: a shaft with a head at the foot."""
+def _wedge(x_centre: float, width: float, y_top: float, y_bottom: float,
+           *, up: bool = True) -> str:
+    """SVG path for an arrow of a given width: a shaft with a head at one end.
+
+    `up` by default, because every flux this draws is evaporation and evaporation
+    goes up. The picture is still laid out atmosphere-above-soil, so an upward head
+    means water leaving the ground for the air, which is the thing being counted.
+    """
     half = max(width, 0.6) / 2.0
     head = min(4.5, (y_top - y_bottom) * 0.34)
+    if up:
+        neck = y_top - head
+        return (f"M {x_centre - half},{y_bottom} L {x_centre + half},{y_bottom} "
+                f"L {x_centre + half},{neck} L {x_centre + half * 1.75},{neck} "
+                f"L {x_centre},{y_top} L {x_centre - half * 1.75},{neck} "
+                f"L {x_centre - half},{neck} Z")
     neck = y_bottom + head
     return (f"M {x_centre - half},{y_top} L {x_centre + half},{y_top} "
             f"L {x_centre + half},{neck} L {x_centre + half * 1.75},{neck} "
