@@ -1264,45 +1264,52 @@ st.sidebar.divider()
 st.sidebar.caption(f"{len(full):,} rows on record")
 
 
+@st.cache_data(show_spinner=False, ttl=3600)
+def daily_table(serial: str, token: int, rows: int):
+    """The daily table behind the download; `rows` only keys the cache to the record."""
+    return w.download.daily(lg, soil_full, met_full, soil_lg=soil_lg, met_lg=met_lg,
+                            own=full)
+
+
 @st.fragment
 def download_panel() -> None:
-    """Data to take away, for the logger on screen."""
+    """Data to take away, for the logger on screen: which variables, and when."""
     st.markdown("**Download data**")
-    kinds = {"Measurements, 30 min": "measurements", "Daily values": "daily"}
-    if lg.serial in w.metadata.forcing_sites().get(w.flux.SITE, {}).get(
-            "soil_loggers", []) and not w.flux.read().empty:
-        kinds["Eddy covariance and STEMMUS-SCOPE ET"] = "fluxes"
-    kind = kinds[st.selectbox("Data", list(kinds), key="dl_kind")]
-    if kind == "fluxes":
-        start = end = None
-        st.caption("Daily, June to August 2025.")
-        name = f"{w.flux.SITE}_ET_2025.csv"
-    else:
-        first, last = full.index.min().date(), full.index.max().date()
-        # Keyed by logger: another logger has another record, and a range kept from the
-        # last one can fall outside it.
-        a, b = st.columns(2)
-        start = a.date_input("From", first, min_value=first, max_value=last,
-                             key=f"dl_a_{lg.serial}")
-        end = b.date_input("To", last, min_value=first, max_value=last,
-                           key=f"dl_b_{lg.serial}")
-        if start > end:
-            st.warning("The start date is after the end date.")
-            return
-        name = f"{lg.name}_{kind}_{start}_{end}.csv"
+    frame, notes = daily_table(lg.serial, st.session_state.token, len(full))
+    offer = w.download.offer(full, set(frame.columns))
+    if not offer:
+        st.caption("Nothing to download for this logger.")
+        return
+    # Keyed by logger throughout: another logger has other variables and another record,
+    # and a choice kept from the last one may not exist here.
+    category = st.selectbox("Data", list(offer), key=f"dl_c_{lg.serial}")
+    daily = w.download.CATEGORIES[category][0] == "daily"
+    chosen = [v for v in offer[category]
+              if st.checkbox(v, value=True, key=f"dl_v_{lg.serial}_{v}")]
+    if not chosen:
+        st.caption("Tick at least one variable.")
+        return
+    first, last = full.index.min().date(), full.index.max().date()
+    a, b = st.columns(2)
+    start = a.date_input("From", first, min_value=first, max_value=last,
+                         key=f"dl_a_{lg.serial}")
+    end = b.date_input("To", last, min_value=first, max_value=last,
+                       key=f"dl_b_{lg.serial}")
+    if start > end:
+        st.warning("The start date is after the end date.")
+        return
 
     # Built when the button is pressed, not on every redraw: three years at 30 minutes is
     # several megabytes.
     def make() -> str:
-        if kind == "fluxes":
-            return w.download.fluxes()
-        if kind == "measurements":
-            return w.download.measurements(lg, full, start, end)
-        return w.download.daily(lg, soil_full, met_full, soil_lg=soil_lg, met_lg=met_lg,
-                                own=full, start=start, end=end)
+        if daily:
+            return w.download.daily_csv(lg, frame, notes, start, end, chosen)
+        return w.download.measurements(lg, full, start, end, chosen)
 
-    st.download_button("Download CSV", make, file_name=name, mime="text/csv",
-                       width="stretch", key="dl_go", on_click="ignore")
+    st.download_button("Download CSV", make, mime="text/csv", width="stretch",
+                       file_name=f"{lg.name}_{category.split(',')[0].replace(' ', '_')}_"
+                                 f"{'daily' if daily else '30min'}_{start}_{end}.csv",
+                       key="dl_go", on_click="ignore")
 
 
 with st.sidebar:
