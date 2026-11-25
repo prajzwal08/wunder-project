@@ -94,10 +94,11 @@ HAS_STRESS = (hasattr(w, "stress") and hasattr(w, "soil_source")
 _NEEDS = ("water_story", "logger_map", "evapotranspiration", "wsf_explorer",
           "limit_key", "compact", "BASEMAPS")
 _stale = [n for n in _NEEDS if not hasattr(w.plot, n)]
+_stale += [n for n in ("explain", "flux") if not hasattr(w, n)]
 if _stale:
     st.error(
         "**This deployment is running an older copy of the `wunder` package than "
-        "`app.py` expects** — `wunder.plots` is missing "
+        "`app.py` expects** — `wunder` is missing "
         + ", ".join(f"`{n}`" for n in _stale)
         + ".\n\nA push alone does not pick up new functions, because the old module "
           "object survives the redeploy. **Reboot the app** — on Streamlit Community "
@@ -162,10 +163,21 @@ CHART_CONFIG = {"displaylogo": False, "displayModeBar": "hover",
                 "toImageButtonOptions": {"format": "png", "scale": 3}}
 
 
-def show(fig, key: str) -> None:
+def explain(key: str) -> None:
+    """The collapsed paragraph under a chart: what it is, and why it matters."""
+    words = w.explain.text(key)
+    if words:
+        with st.expander(w.explain.LABEL):
+            st.markdown(words)
+
+
+def show(fig, key: str, about: str | None = None) -> None:
+    """Draw a figure, with its own paragraph folded underneath when it has one."""
     if on_phone():
         fig = w.plot.compact(fig)
     st.plotly_chart(fig, width='stretch', key=key, config=CHART_CONFIG)
+    if about:
+        explain(about)
 
 
 def name_of(lg) -> str:
@@ -282,8 +294,8 @@ if mode == "Compare":
         if HAS_STRESS:
             QUANTITIES |= {
                 "wsf": "Water stress factor (WSF)",
-                "et_actual": "ETa (daily)",
-                "et_cumulative": "Cumulative ETa (this year)",
+                "et_actual": "Makkink ETa (daily)",
+                "et_cumulative": "Cumulative Makkink ETa (this year)",
                 "et0_cumulative": "Cumulative ETo (this year)",
             }
         DERIVED = {"wsf", "et_actual", "et_cumulative", "et0_cumulative"}
@@ -380,8 +392,8 @@ if mode == "Compare":
                 "moisture": "Root-zone soil moisture (m³ m⁻³)",
                 "temperature": "Root-zone soil temperature (°C)",
                 "wsf": "Water stress factor, WSF (—)",
-                "et_actual": "ETa (mm d⁻¹)",
-                "et_cumulative": "Cumulative ETa (mm)",
+                "et_actual": "Makkink ETa (mm d⁻¹)",
+                "et_cumulative": "Cumulative Makkink ETa (mm)",
                 "et0_cumulative": "Cumulative ETo (mm)"}[qty]
         show(w.plot.compare_series(
             series, ylabel=unit, title=f"{site_.name} — {QUANTITIES[qty]}",
@@ -412,11 +424,9 @@ if mode == "Compare":
             st.warning(f"{lg.name} has only {full.index.year.nunique()} year of record — "
                        "there is nothing earlier to compare against.")
             st.stop()
-        st.caption("The band spans every earlier year, the pale line is their median, and "
-                   "the bold line is the current year. Cumulative totals restart on "
-                   "1 January, so the gap at today's date is this year's surplus or "
-                   "deficit.")
-        show(w.plot.climatology(full, kind=what, logger=lg), "clim")
+        st.caption("One line per year, this year bold and black, earlier years fainter "
+                   "the older they are. Cumulative totals restart on 1 January.")
+        show(w.plot.climatology(full, kind=what, logger=lg), "clim", what)
 
     # ---- one logger, several variables ------------------------------------
     else:
@@ -612,7 +622,8 @@ if "Soil moisture" in tabs:
             d = window(full, days, start, end)
             if _empty(d):
                 return
-            show(w.plot.soil_moisture(d, precip=bool(met), logger=lg), "sm")
+            show(w.plot.soil_moisture(d, precip=bool(met), logger=lg), "sm",
+                 "soil_moisture")
             if not met:
                 st.caption("No rain gauge on this logger — see the field's "
                            "ATMOS-41 station.")
@@ -624,7 +635,8 @@ if "Root zone" in tabs:
             d = window(full, days, start, end)
             if _empty(d):
                 return
-            show(w.plot.root_zone_moisture(d, precip=bool(met), logger=lg), "rz")
+            show(w.plot.root_zone_moisture(d, precip=bool(met), logger=lg), "rz",
+                 "root_zone")
             depths = w.depths_of(w.depth_columns(d, "moisture"))
             if depths:
                 th = w.thicknesses(depths)
@@ -642,7 +654,8 @@ if "Soil temperature" in tabs:
             d = window(full, days, start, end)
             if _empty(d):
                 return
-            show(w.plot.soil_temperature(d, air=bool(met), logger=lg), "st")
+            show(w.plot.soil_temperature(d, air=bool(met), logger=lg), "st",
+                 "soil_temperature")
         with_period("st", _st)
 
 if "Water potential" in tabs:
@@ -659,13 +672,13 @@ if "Water potential" in tabs:
                 met_df = window(source_of(src, full), days, start, end)
             if met_df is not None and not met_df.empty:
                 show(w.plot.matric_potential_vpd(d, met_df, logger=lg, met_logger=src),
-                     "mpv")
+                     "mpv", "matric_potential")
                 if src.serial != lg.serial:
                     st.caption(f"VPD is from **{src.name}**, the ATMOS-41 station for "
                                f"{src.field_name} — this logger has no weather sensor. "
                                "Soil supply below, atmospheric demand above.")
             else:
-                show(w.plot.matric_potential(d, logger=lg), "mp")
+                show(w.plot.matric_potential(d, logger=lg), "mp", "matric_potential")
                 st.caption("No weather station available for VPD.")
         with_period("mp", _mp)
 
@@ -674,22 +687,25 @@ if "Water potential" in tabs:
                 d = window(full, days, start, end)
                 if _empty(d):
                     return
-                show(w.plot.conductivity(d, logger=lg), "ec")
+                show(w.plot.conductivity(d, logger=lg), "ec", "conductivity")
             with_period("ec", _ec)
 
 if "Weather" in tabs:
     with tabs["Weather"]:
-        for _key, _builder, _default in (
-                ("pr", lambda d: w.plot.precipitation(d, cumulative=True, logger=lg), "3M"),
-                ("tr", lambda d: w.plot.temperature_radiation(d, logger=lg), "1M"),
-                ("vpd", lambda d: w.plot.vpd_temperature(d, logger=lg), "1M")):
+        for _key, _builder, _default, _about in (
+                ("pr", lambda d: w.plot.precipitation(d, cumulative=True, logger=lg),
+                 "3M", "precipitation"),
+                ("tr", lambda d: w.plot.temperature_radiation(d, logger=lg), "1M",
+                 "temperature_radiation"),
+                ("vpd", lambda d: w.plot.vpd_temperature(d, logger=lg), "1M",
+                 "vpd_temperature")):
             # Bound as defaults, not captured: a closure over the loop variables would
             # leave all three panels drawing whatever the last iteration set.
-            def _wx(days, start, end, key=_key, build=_builder) -> None:
+            def _wx(days, start, end, key=_key, build=_builder, about=_about) -> None:
                 d = window(full, days, start, end)
                 if _empty(d):
                     return
-                show(build(d), key)
+                show(build(d), key, about)
             with_period(_key, _wx, default=_default)
 
 if "Evapotranspiration" in tabs:
@@ -721,9 +737,10 @@ if "Evapotranspiration" in tabs:
                     e1.metric("Mean ETo", f"{wb.et0.mean():.2f} mm/day")
                     e2.metric("Total ETo", f"{wb.et0.sum():,.0f} mm")
                     e3.metric("Total rainfall", f"{wb.precip.sum():,.0f} mm")
-                st.info("ETa and WSF need this site's soil parameters, extracted from "
+                st.info("Makkink ETa and WSF need this site's soil parameters, extracted from "
                         "a prepared model run (`forcing/extract_soil.py`).")
-                show(w.plot.precipitation(met_win, cumulative=True, logger=met_lg), "et")
+                show(w.plot.precipitation(met_win, cumulative=True, logger=met_lg), "et",
+                     "precipitation")
                 return
 
             # Measured record, nothing to drag. Every control in the app lives in the
@@ -731,15 +748,16 @@ if "Evapotranspiration" in tabs:
             e1, e2, e3, e4 = st.columns(4)
             e1.metric("Total ETo", f"{aet.et0.sum():,.0f} mm",
                       help="Reference: the demand a well-watered grass sward would meet.")
-            e2.metric("Total ETa", f"{aet.et.sum():,.0f} mm",
+            e2.metric("Total Makkink ETa", f"{aet.et.sum():,.0f} mm",
                       help="Actual: WSF \u00d7 Kc \u00d7 ETo, what this soil could supply.")
             e3.metric("Mean WSF", f"{aet.wsf.mean():.2f}",
                       help="Water stress factor: 1 = the soil can meet any demand, "
                            "0 = it can meet none of it. See the Understand tab.")
             e4.metric("Demand met", f"{100 * aet.et.sum() / aet.et0.sum():.0f}%",
-                      help="ETa as a share of ETo over the period shown.")
+                      help="Makkink ETa as a share of ETo over the period shown.")
             show(w.plot.evapotranspiration(soil_win, met=met_win, ref=soil_lg.serial,
-                                           out=aet, logger=lg), "et")
+                                           out=aet, logger=lg), "et",
+                 "evapotranspiration")
 
             a = aet.attrs
             st.caption(
@@ -749,23 +767,39 @@ if "Evapotranspiration" in tabs:
                 f"\u03b8_fc = {a['theta_fc']:.3f}, half stress at "
                 f"{a['theta_half']:.3f}, \u03b8_r = {a['theta_r']:.3f} "
                 f"m\u00b3 m\u207b\u00b3.  \u00b7  {len(wb):,} complete days shown. "
-                f"ETa is WSF \u00d7 ETo with K\u1d9c = 1: no claim is made about how a "
+                f"Makkink ETa is WSF \u00d7 ETo with K\u1d9c = 1: no claim is made about how a "
                 f"food forest differs from the reference grass. To change K\u1d9c, and "
                 f"for the method and an irrigation calculator, go to **Understand**."
             )
 
         with_period("et", _et, default="6M")
 
-        st.caption(
-            "**ETo is Makkink reference evapotranspiration** — the demand a well-watered "
-            "short grass sward would meet, from global radiation and air temperature with "
-            "the Dutch coefficient 0.65. This is the same quantity KNMI publishes as "
-            "`EV24`, so it is comparable with the national record. It is *not* what this "
-            "canopy actually transpires, which is what ETa estimates. Makkink also assumes "
-            "the pyranometer sees open sky: a mast that the canopy has grown over "
-            "under-reads radiation, and its ETo with it — which is the case at "
-            "K1 Voedselbos."
-        )
+        # The tower and the model exist for Field 1 in 2025 only, and only on a machine
+        # that holds the private file (see wunder/flux.py) -- a public deployment shows
+        # nothing here.
+        def _flux() -> None:
+            fl = w.flux.read()
+            if fl.empty or soil_full is None or met_full is None:
+                return
+            try:
+                if w.stress.site_of(lg.serial) != w.flux.SITE:
+                    return
+                est = w.stress.actual_et(soil_full, met_full, ref=soil_lg.serial)
+            except (FileNotFoundError, ValueError):
+                return
+            year, months = 2025, (6, 7, 8)
+            both = est[["et0", "et"]].join(fl[["eddy", "model"]], how="inner")
+            both = both[(both.index.year == year)
+                        & both.index.month.isin(months)].dropna()
+            if both.empty:
+                return
+            st.divider()
+            show(w.plot.flux_comparison(est, fl, year=year, months=months,
+                                        logger=lg),
+                 "flux", "flux")
+
+        _flux()
+
 
 def _limit_key_html(marks) -> str:
     """The four soil marks as a compact coloured row under a figure.
@@ -858,7 +892,7 @@ if "Understand" in tabs:
                 m1, m2, m3, m4 = st.columns(4)
                 m1.metric("WSF now", f"{wsf:.2f}",
                           help="The share of demand this soil can meet.")
-                m2.metric("ETa", f"{eta:.2f} mm/day",
+                m2.metric("Makkink ETa", f"{eta:.2f} mm/day",
                           help="WSF × Kc × ETo — what the soil can actually supply.")
                 m3.metric("Not getting", f"{unmet:.2f} mm/day", delta_color="inverse",
                           delta=(f"{100 * unmet / (kc * eto):.0f}% of demand"
@@ -871,7 +905,7 @@ if "Understand" in tabs:
                     st.markdown(
                         f"At this demand and with no rain, stress begins in about "
                         f"**{to_stress:.0f} days** (\u03b8 falls to "
-                        f"{info['theta_half']:.3f}). A floor, not a forecast: ETa falls "
+                        f"{info['theta_half']:.3f}). A floor, not a forecast: Makkink ETa falls "
                         "as the soil dries, so the real number is larger.")
                 elif theta <= info["theta_half"]:
                     st.markdown(f"**This soil is already past the point where stress "
@@ -894,7 +928,7 @@ if "Understand" in tabs:
         st.caption("The detail, if you want it:")
 
         # ================= the detail, folded away ==========================
-        with st.expander("What ETo and ETa actually are"):
+        with st.expander("What ETo and Makkink ETa actually are"):
             c_o, c_a = st.columns(2)
             with c_o:
                 st.markdown(
@@ -908,7 +942,7 @@ if "Understand" in tabs:
                     unsafe_allow_html=True)
             with c_a:
                 st.markdown(
-                    "**ET<sub>a</sub> — the *actual***<br>"
+                    "**Makkink ET<sub>a</sub> — the *actual*, calculated**<br>"
                     "What this soil could actually supply: "
                     "$ET_a = \\mathrm{WSF} \\cdot K_c \\cdot ET_o$. When the "
                     "profile is wet, WSF is near 1 and the two almost coincide; as it "
@@ -1013,8 +1047,8 @@ if "Understand" in tabs:
             with st.expander("See it on the real record, with K\u1d9c"):
                 st.markdown(
                     "The same figure the **Evapotranspiration** tab shows, except that "
-                    "here $K_c$ moves. Watch the **third row**: the gap between "
-                    "cumulative ET<sub>o</sub> and ET<sub>a</sub> is the season's unmet "
+                    "here $K_c$ moves. Watch **cumulative ET**: the gap between "
+                    "ET<sub>o</sub> and Makkink ET<sub>a</sub> is the season's unmet "
                     "demand, and $K_c$ moves it directly. Nothing here changes any "
                     "other tab.", unsafe_allow_html=True)
 
@@ -1039,7 +1073,7 @@ if "Understand" in tabs:
                     k1.metric("Total ETo", f"{out.et0.sum():,.0f} mm",
                               help="Unchanged by Kc — the atmosphere does not know what "
                                    "is growing.")
-                    k2.metric("Total ETa", f"{out.et.sum():,.0f} mm",
+                    k2.metric("Total Makkink ETa", f"{out.et.sum():,.0f} mm",
                               delta=(f"{out.et.sum() - base.et.sum():+,.0f} mm vs "
                                      "K\u1d9c = 1") if abs(kc - 1.0) > 1e-9 else None)
                     k3.metric("Mean WSF", f"{out.wsf.mean():.2f}",
@@ -1069,7 +1103,7 @@ if "Wind" in tabs:
             a.caption("Bars point in the direction the wind blows **from**.")
             with b:
                 show(w.plot.wind_rose(d, sectors=sectors, calm_threshold=calm,
-                                      logger=lg), "wr")
+                                      logger=lg), "wr", "wind_rose")
         with_period("wr", _wind, default="3M")
 
 with tabs["Summary"]:
@@ -1089,72 +1123,39 @@ with tabs["Summary"]:
     newest_year = int(full.index.year.max())
     years_avail = sorted(int(y) for y in full.index.year.unique())
 
-    # Half the width each: where this year stands on the left, where the logger stands on
-    # the right. The map is an orientation device, not the subject of the tab.
+    # An orientation device, not the subject of the tab, so it stays short.
     @st.fragment
     def header() -> None:
-        left, right = st.columns([1, 1])
-        with left:
-            # The standing row needs a complete earlier year to be "normal" against. The
-            # charts below do not -- a single year drawn to today is still the thing you
-            # came to look at -- so a short record loses the metrics, not the panels.
-            if len(years_avail) > 1:
-                standings = [(k, w.plot.climatology_standing(
-                    full, k, ref=ref_serial, met=met_full, soil=soil_full))
-                    for k in kinds]
-                standings = [(k, v) for k, v in standings if v]
-                if standings:
-                    # Two to a row: seven metrics across half a screen would each get
-                    # about seventy pixels, which is narrower than "Cumulative P − ET".
-                    for i in range(0, len(standings), 2):
-                        for col, (k, sd) in zip(st.columns(2), standings[i:i + 2]):
-                            dp = 0 if sd["cumulative"] else 3
-                            col.metric(
-                                sd["label"],
-                                f"{sd['current']:,.{dp}f}",
-                                delta=f"{sd['delta']:+,.{dp}f} vs normal"
-                                      + (f" ({sd['pct']:+.0f}%)"
-                                         if sd["pct"] is not None
-                                         and abs(sd["pct"]) < 1000 else ""),
-                                delta_color=("normal" if k != "vpd_cumulative"
-                                             else "inverse"),
-                            )
-                    ref_sd = standings[0][1]
-                    st.caption(
-                        f"As of **{ref_sd['as_of']:%d %B %Y}**, against the median of "
-                        f"{', '.join(str(y) for y in ref_sd['years'])} on this date."
-                        + (f" {', '.join(str(y) for y in ref_sd['excluded'])} excluded "
-                           "— incomplete." if ref_sd["excluded"] else "")
-                    )
-                else:
-                    st.caption("Nothing to summarise for this logger yet.")
-            else:
-                st.caption(f"Only {newest_year} on record here — the charts below show "
-                           "this year to date. There is no earlier complete year to "
-                           "call normal yet.")
-        with right:
+        if len(years_avail) < 2:
+            st.caption(f"Only {newest_year} on record here — the charts below show "
+                       "this year to date. There is no earlier year to compare with.")
+        # Centred and square. The figure carries its own width, so Streamlit must not
+        # stretch it back into a strip.
+        side = 330 if on_phone() else 520
+        with st.container(horizontal_alignment="center"):
             basemap = st.segmented_control(
                 "Basemap", list(w.plot.BASEMAPS), key="basemap", default="satellite",
-                format_func=w.plot.BASEMAPS.get, label_visibility="collapsed")
+                format_func=w.plot.BASEMAPS.get, label_visibility="collapsed",
+                width="content")
             fig_map = w.plot.logger_map(w.loggers(), selected=lg,
-                                        basemap=basemap or "satellite",
-                                        height=300 if on_phone() else 420)
+                                        basemap=basemap or "satellite", height=side)
             picked = st.plotly_chart(
-                fig_map, width='stretch', key="map", on_select="rerun",
+                fig_map, width=side, height=side, key="map", on_select="rerun",
                 selection_mode="points",
                 config={"displaylogo": False, "displayModeBar": False},
             )
-            st.caption("Tap a marker to switch logger · grey markers are offline")
-            points = ((picked.selection or {}).get("points")
-                      if picked is not None else None)
-            if points:
-                # The selection survives the rerun, so this fires once and then matches
-                # the logger already showing -- no loop. The rerun is whole-app, not
-                # fragment: changing logger changes every tab.
-                serial = points[0]["customdata"][0]
-                if serial != lg.serial:
-                    st.session_state["pending_logger"] = serial
-                    st.rerun()
+            st.caption("Tap a marker to switch logger · grey markers are offline",
+                       width="content")
+        points = ((picked.selection or {}).get("points")
+                  if picked is not None else None)
+        if points:
+            # The selection survives the rerun, so this fires once and then matches
+            # the logger already showing -- no loop. The rerun is whole-app, not
+            # fragment: changing logger changes every tab.
+            serial = points[0]["customdata"][0]
+            if serial != lg.serial:
+                st.session_state["pending_logger"] = serial
+                st.rerun()
 
     header()
     st.divider()
@@ -1186,6 +1187,7 @@ with tabs["Summary"]:
                 fig_c, width='stretch', key=f"cl{k}", on_select="rerun",
                 selection_mode="points", config=CHART_CONFIG,
             )
+            explain(k)
             # The invisible marker rows `climatology` lays along each line are what make
             # a click land at all -- `_line` is mode="lines" with no points in it.
             pts = (event.selection or {}).get("points") if event is not None else None
@@ -1215,18 +1217,13 @@ with tabs["Summary"]:
             year_ = (st.radio("Year", years_, horizontal=True, key="wb_year")
                      if len(years_) > 1 else years_[0])
             show(w.plot.weekly_balance(soil_full, met_full, ref=soil_lg.serial,
-                                       year=year_, logger=lg), "wb")
-            st.caption("From 1 January, two bars a week: rain, and evaporation with "
-                       "the demand (ETo) in pale behind what actually "
-                       "evaporated — the exposed pale head *is* the water stress. "
-                       "Below, the same weeks as P − ET: blue where the week put "
-                       "water into the profile, brown where the store paid for it.")
+                                       year=year_, logger=lg), "wb", "weekly_balance")
 
     # Last on the page, deliberately: someone who wants the explanation will look for
     # it, and someone who does not should not scroll past it to reach the charts.
     st.divider()
     with st.container(border=True):
-        st.markdown("**New to WSF, ETo and ETa?** Open the **Understand** tab — the "
+        st.markdown("**New to WSF, ETo and Makkink ETa?** Open the **Understand** tab — the "
                     "function, what the terms mean, and a calculator for how much you "
                     "would need to irrigate.")
         with st.popover("The short version"):
@@ -1236,7 +1233,7 @@ with tabs["Summary"]:
                 "your soil is.\n"
                 "- **WSF** — the share of that demand this soil can actually meet. "
                 "1 when it can meet all of it, 0 when it can meet none.\n"
-                "- **ETa** — *actual* evaporation, ETo × WSF × Kc. The gap between ETa "
+                "- **Makkink ETa** — *actual* evaporation, ETo × WSF × Kc. The gap between Makkink ETa "
                 "and ETo is water the plants asked for and did not get.")
 
 with tabs["Variables"]:
@@ -1252,13 +1249,13 @@ with tabs["Variables"]:
             d = window(full, days, start, end)
             if _empty(d):
                 return
-            show(w.plot.timeseries(d, column, unit=units.get(column, ""), logger=lg), key)
+            show(w.plot.timeseries(d, column, unit=units.get(column, ""), logger=lg), key,
+                 "timeseries")
         st.markdown(f"**{c}**")
         with_period(f"ts{i}", _var)
 
 with tabs["Coverage"]:
-    show(w.plot.coverage_heatmap(full, logger=lg), "cov")
-    st.caption("Fraction of the expected 288 daily samples present.")
+    show(w.plot.coverage_heatmap(full, logger=lg), "cov", "coverage")
 
 with tabs["Loggers"]:
     st.caption("`ATMOS` = weather station · `WP` = water potential (TEROS21) · "
@@ -1266,4 +1263,4 @@ with tabs["Loggers"]:
     st.dataframe(w.overview(), width='stretch', hide_index=True)
 
 st.sidebar.divider()
-st.sidebar.caption(f"{len(full):,} rows on record · 5-minute resolution")
+st.sidebar.caption(f"{len(full):,} rows on record")

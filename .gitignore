@@ -8,6 +8,9 @@ data/raw/
 # `python -m wunder.publish`.
 !data/published/
 
+# Eddy-covariance and model ET: not ours to publish. See wunder/flux.py.
+data/flux/
+
 __pycache__/
 *.pyc
 .ipynb_checkpoints/

@@ -84,6 +84,9 @@ RZ = "#6a3d9a"
 # takes a darker shade of it, exactly as the rainfall figure does with RAIN.
 ET0_C = RAD
 ET0_CUM = "#a86f00"
+#: The two independent ET series of `flux_comparison`.
+EDDY_C = "#2a78d6"
+MODEL_C = "#7b3294"
 RAIN_CUM = "#1a5aa8"
 
 FONT = '"Times New Roman", Times, Georgia, serif'
@@ -196,6 +199,26 @@ def _wrap(text: str, width: int = 34) -> str:
     return "<br>".join(lines)
 
 
+#: Annotation name marking a panel heading, so `compact` can find and resize them.
+ROW_HEADING = "row-heading"
+
+
+def _row_headings(fig: go.Figure, headings, *, columns: bool = False) -> None:
+    """A bold heading tight above each row of a stacked figure (or each of its `columns`).
+
+    Bold, ink-coloured and two pixels off its own panel's top edge. They used to be pale
+    and halfway up the gap, which left a reader to guess whether a heading belonged to
+    the chart above it or the one below.
+    """
+    for n, text in enumerate(headings, start=1):
+        axis = "" if n == 1 else str(n)
+        fig.add_annotation(
+            name=ROW_HEADING, x=0, xref=f"x{axis} domain" if columns else "x domain",
+            y=1.0, yref=f"y{axis} domain", yshift=2,
+            text=f"<b>{text}</b>", showarrow=False, xanchor="left", yanchor="bottom",
+            align="left", font=dict(family=FONT, size=FS_TICK, color=INK))
+
+
 def compact(fig: go.Figure, *, title_width: int = 34) -> go.Figure:
     """Re-lay a finished figure for a narrow screen.
 
@@ -229,8 +252,20 @@ def compact(fig: go.Figure, *, title_width: int = 34) -> go.Figure:
     title = fig.layout.title.text if fig.layout.title else None
     tall = fig.layout.height or 400
 
+    # The top margin follows the lines the title actually takes: a spelled-out heading
+    # wraps to three on a phone and would otherwise run into the data.
+    lines = len(_wrap(title, title_width).split("<br>")) if title else 0
+    head = max(44, 24 + 21 * lines) if title else 16
+    headings = [a for a in fig.layout.annotations if a.name == ROW_HEADING]
+    for a in headings:
+        wrapped = _wrap(re.sub(r"</?b>", "", a.text), 32)
+        a.update(text=f"<b>{wrapped}</b>", font=dict(size=FS_TICK - 3))
+    if headings:
+        # Row 1's heading lives in the top margin, under the title.
+        head += 6 + 17 * (1 + headings[0].text.count("<br>"))
+
     fig.update_layout(
-        margin=dict(l=8, r=8, t=44 if title else 16, b=bottom),
+        margin=dict(l=8, r=8, t=head, b=bottom),
         height=(tall if rows > 1 else max(260, int(tall * 0.86))) + bottom - 48,
         font=dict(size=FS_TICK - 3),
         # Anchored to the figure's own bottom-left corner, not the plot area's: with
@@ -242,9 +277,18 @@ def compact(fig: go.Figure, *, title_width: int = 34) -> go.Figure:
     )
     if title:
         fig.update_layout(title=dict(text=_wrap(title, title_width),
-                                     font=dict(size=FS_TITLE - 5), y=0.985))
+                                     font=dict(size=FS_TITLE - 5),
+                                     # A fixed distance from the top, whatever the height: a fraction
+                                     # of a 1600 px figure is not a fraction of a 400 px one.
+                                     y=1 - 22 / fig.layout.height, yanchor="top"))
     fig.update_xaxes(title_font=dict(size=FS_AXIS_TITLE - 5),
                      tickfont=dict(size=FS_TICK - 3))
+    # Level date labels, and few enough to fit. Left alone, Plotly turns twelve month names
+    # sideways at this width and they run into whatever is printed below the axis.
+    fig.for_each_xaxis(lambda ax: ax.update(tickangle=0, dtick="M2")
+                       if ax.dtick == "M1" else None)
+    if headings:
+        fig.update_xaxes(tickangle=0, nticks=4)
     fig.update_yaxes(title_font=dict(size=FS_AXIS_TITLE - 5),
                      tickfont=dict(size=FS_TICK - 3))
     return fig
@@ -351,15 +395,53 @@ def soil_moisture(
     return fig
 
 
+#: Indicative soil temperature ranges for growth [degC], for daily means: (from, to, label,
+#: fill). Grass in the Netherlands starts at 5-8 degC soil temperature; temperate tree
+#: roots grow best at roughly 15-25 degC. Neither was measured at these sites.
+GROWTH_BANDS = (
+    (None, 5.0, "little growth", "rgba(58,95,191,0.07)"),
+    (5.0, 8.0, "growth starting", "rgba(26,122,60,0.07)"),
+    (15.0, 25.0, "best for roots", "rgba(26,122,60,0.13)"),
+    (25.0, None, "heat stress", "rgba(208,59,59,0.09)"),
+)
+#: Daily-mean soil temperature taken as the start of spring growth [degC].
+SPRING_ONSET = 8.0
+
+
+def _add_growth_bands(fig: go.Figure, data: pd.DataFrame) -> None:
+    """Shade `GROWTH_BANDS` behind a temperature panel, only as far as the data goes."""
+    values = data.to_numpy(dtype="float64")
+    if not np.isfinite(values).any():
+        return
+    lo, hi = float(np.nanmin(values)) - 2, float(np.nanmax(values)) + 2
+    for a, b, label, fill in GROWTH_BANDS:
+        y0, y1 = max(lo, a if a is not None else lo), min(hi, b if b is not None else hi)
+        if y1 <= y0:
+            continue
+        fig.add_hrect(y0=y0, y1=y1, fillcolor=fill, line_width=0, layer="below")
+        # A sliver of a band gets its colour but no name: the name would land on its
+        # neighbour's.
+        if (y1 - y0) / (hi - lo) > 0.06:
+            fig.add_annotation(
+                x=0.005, xref="x domain", y=y1, yref="y", text=label, showarrow=False,
+                xanchor="left", yanchor="top", bgcolor="rgba(255,255,255,0.75)",
+                borderpad=1, font=dict(family=FONT, size=FS_NOTE, color=MUTED))
+    fig.update_yaxes(range=[lo, hi])
+
+
 def soil_temperature(
     df: pd.DataFrame,
     *,
     air: bool = True,
     zero_line: bool = True,
+    bands: bool = False,
     logger: Logger | str | None = None,
     max_points: int | None = MAX_POINTS,
 ) -> go.Figure:
-    """Soil temperature by depth, with air temperature — same unit, one axis."""
+    """Soil temperature by depth, with air temperature — same unit, one axis.
+
+    `bands` shades the indicative growth ranges in `GROWTH_BANDS`.
+    """
     cols = depth_columns(df, "temperature")
     d = _decimate(df, max_points)
     fig = _panel(_title(logger, "Soil temperature"), 460)
@@ -370,6 +452,8 @@ def soil_temperature(
         fig.add_trace(_line(d.index, d[c], _depth_label(c), _col_color(c), fmt=".1f"))
     if zero_line:
         fig.add_hline(y=0, line=dict(color=AXIS, width=1, dash="dot"))
+    if bands:
+        _add_growth_bands(fig, d[cols + ([AIR_T] if air and AIR_T in d else [])])
     fig.update_yaxes(title_text="Temperature (°C)")
     return fig
 
@@ -399,6 +483,112 @@ def root_zone_moisture(
     kw = dict(secondary_y=False) if bar is not None else {}
     fig.update_yaxes(title_text="RZSM (m<sup>3</sup> m<sup>-3</sup>)",
                      range=list(ylim) if ylim else None, **kw)
+    return fig
+
+
+#: Meteorological seasons, for `moisture_temperature`.
+SEASONS = {"winter": ((12, 1, 2), "#2a78d6"), "spring": ((3, 4, 5), "#1baf7a"),
+           "summer": ((6, 7, 8), "#eb6834"), "autumn": ((9, 10, 11), "#8a6d3b")}
+
+
+def moisture_temperature(df: pd.DataFrame, *, near_cm: float = 10.0,
+                         logger: Logger | str | None = None) -> go.Figure:
+    """Soil moisture against soil temperature, with and without the season.
+
+    Left, every daily mean, coloured by season: a strong negative cloud that is mostly
+    the calendar, since winter is cold and wet. Right, June to August only, each day as
+    its departure from a 31-day running mean -- what is left once the season is taken
+    out. Days below 1 degC are dropped, because a frozen soil reads dry.
+    """
+    # Both quantities at one depth, the nearest to `near_cm` that carries them.
+    temp = {c.split()[-1]: c for c in depth_columns(df, "temperature")
+            if df[c].notna().mean() > 0.5}
+    moist = {c.split()[-1]: c for c in depth_columns(df, "moisture")
+             if df[c].notna().mean() > 0.5}
+    both = sorted(set(temp) & set(moist),
+                  key=lambda k: abs(float(k.removesuffix("cm")) - near_cm))
+    if not both:
+        return _panel(_title(logger, "Soil moisture and temperature — not measured at "
+                                     "the same depth here"), 320)
+    depth = both[0]
+    d = df[[moist[depth], temp[depth]]].resample("1D").mean().dropna()
+    d.columns = ["m", "t"]
+    d = d[(d.t >= 1.0) & (d.m <= 0.70)]
+    grid = d.asfreq("1D")
+    anom = (grid - grid.rolling(31, center=True, min_periods=20).mean()).dropna()
+    anom = anom[anom.index.month.isin([6, 7, 8])]
+
+    fig = make_subplots(rows=1, cols=2, horizontal_spacing=0.13)
+    _style(fig, _title(logger, f"Soil moisture and soil temperature at {depth[:-2]} cm"),
+           520)
+    for name, (months, colour) in SEASONS.items():
+        part = d[d.index.month.isin(months)]
+        if part.empty:
+            continue
+        fig.add_trace(go.Scatter(
+            x=part.t, y=part.m, mode="markers", name=name, customdata=part.index.date,
+            marker=dict(color=colour, size=5, opacity=0.45),
+            hovertemplate="%{customdata}<br>%{x:.1f} °C, %{y:.3f}<extra>" + name
+                          + "</extra>"), row=1, col=1)
+    fig.add_trace(go.Scatter(
+        x=anom.t, y=anom.m, mode="markers", showlegend=False, customdata=anom.index.date,
+        marker=dict(color=SEASONS["summer"][1], size=5, opacity=0.55),
+        hovertemplate="%{customdata}<br>%{x:+.1f} °C, %{y:+.3f}<extra></extra>"),
+        row=1, col=2)
+    r1 = d.m.corr(d.t)
+    r2 = anom.m.corr(anom.t) if len(anom) > 30 else float("nan")
+    _row_headings(fig, (f"All days (r = {r1:.2f})",
+                        f"Summer, season removed (r = {r2:.2f})" if r2 == r2
+                        else "Summer, season removed (too few days)"), columns=True)
+    fig.update_xaxes(title_text="Soil temperature (°C)", row=1, col=1)
+    fig.update_yaxes(title_text="Soil moisture (m<sup>3</sup> m<sup>-3</sup>)", row=1, col=1)
+    fig.update_xaxes(title_text="Temperature, departure (°C)", row=1, col=2)
+    fig.update_yaxes(title_text="Moisture, departure (m<sup>3</sup> m<sup>-3</sup>)",
+                     row=1, col=2)
+    # Legend above the panel headings, title above that.
+    fig.update_layout(hovermode="closest", margin=dict(t=118), legend=dict(y=1.08))
+    return fig
+
+
+def flux_comparison(
+    out: pd.DataFrame,
+    flux: pd.DataFrame,
+    *,
+    year: int,
+    months: tuple[int, ...] = (6, 7, 8),
+    logger: Logger | str | None = None,
+) -> go.Figure:
+    """Daily ETo and ETa against the eddy tower and STEMMUS-SCOPE, June to August.
+
+    `out` is `stress.actual_et`, `flux` is `flux.read()`. Lines break where a day is
+    missing rather than being drawn across it; the tower is points, because it is the
+    one series that is measured and has gaps of its own.
+    """
+    d = out[["et0", "et"]].join(flux[["eddy", "model"]], how="inner")
+    d = d[(d.index.year == year) & d.index.month.isin(months)]
+    if d.dropna().empty:
+        return _panel(_title(logger, "No days with both tower and model"), 320)
+    d = d.asfreq("1D")
+
+    span = f"{d.index.min():%B}–{d.index.max():%B} {year}"
+    fig = _panel(_title(logger, f"Evapotranspiration: tower, model and estimates — {span}"),
+                 520)
+    for col, name, colour, dash in (
+            ("et0", "Makkink ET<sub>o</sub>", ET0_C, "dot"),
+            ("et", "Makkink ET<sub>a</sub> (ET<sub>o</sub> × WSF)", ET0_CUM, None),
+            ("model", "STEMMUS-SCOPE", MODEL_C, None)):
+        fig.add_trace(_line(d.index, d[col], name, colour, width=1.9, dash=dash, fmt=".2f"))
+    fig.add_trace(go.Scatter(
+        x=d.index, y=d["eddy"], mode="markers", name="Eddy covariance",
+        marker=dict(color=EDDY_C, size=8),
+        hovertemplate="%{y:.2f}<extra>Eddy covariance</extra>"))
+    fig.update_yaxes(title_text="ET (mm/day)", rangemode="tozero")
+    fig.update_xaxes(title_text="Date", title_standoff=4)
+    # Anchored to the figure, not the plot area, with room for two lines: four entries
+    # wrap at browser width and would otherwise climb into the title.
+    fig.update_layout(margin=dict(t=128),
+                      legend=dict(xref="container", x=0.055, xanchor="left",
+                                  yref="container", y=0.89, yanchor="top"))
     return fig
 
 
@@ -606,7 +796,7 @@ def evapotranspiration(
     a reader dragging a Kc slider watched every ETa number move with nothing anywhere
     recording why.
 
-    `row_notes` puts a short caption above each row saying what it shows. Four y-axis
+    `row_notes` puts a bold heading above each row saying what it shows. Four y-axis
     units tell a reader what is measured but not what they are looking at.
     """
     from .stress import actual_et
@@ -635,9 +825,9 @@ def evapotranspiration(
 
     fig = make_subplots(rows=5, cols=1, shared_xaxes=True,
                         row_heights=[0.26, 0.14, 0.13, 0.235, 0.235],
-                        vertical_spacing=0.046 if row_notes else 0.030)
+                        vertical_spacing=0.085 if row_notes else 0.060)
     _style(fig, _title(logger, "Evapotranspiration and the water balance"),
-           1040 if row_notes else 980)
+           1508 if row_notes else 1264)
     # Seven series wrap the horizontal legend onto a second line, which then climbs into
     # the title. Put the title above the legend and give both room.
     # Eight series wrap the horizontal legend onto three lines, which then climbs into
@@ -647,7 +837,7 @@ def evapotranspiration(
     # *container* top, not the plot area's: anchored to the plot area it moves down with
     # every increase in the top margin, so it kept landing on row 1's caption no matter
     # how much room was made for it.
-    fig.update_layout(margin=dict(t=176 if row_notes else 136),
+    fig.update_layout(margin=dict(t=204 if row_notes else 160),
                       title=dict(y=0.985, yanchor="top"),
                       # Plotly flips the legend to reversed order as soon as a trace
                       # carries a fill, which put row 4's entries above row 1's. Pin it
@@ -664,7 +854,7 @@ def evapotranspiration(
     # apart they are, which two overlaid bars never let you trace. The band between the
     # lines is filled: that area *is* the demand the soil did not meet, so the reading
     # the stacked bars gave is kept, and made continuous.
-    eta_line = _line(out.index, out["et"], f"ET<sub>a</sub> (supplied{kc_note})",
+    eta_line = _line(out.index, out["et"], f"Makkink ET<sub>a</sub> (supplied{kc_note})",
                      ET0_CUM, width=1.8, fmt=".2f")
     fig.add_trace(eta_line, row=1, col=1)
     eto_line = _line(out.index, out["et0"], "ET<sub>o</sub> (demand)", ET0_C,
@@ -697,10 +887,12 @@ def evapotranspiration(
     fig.add_trace(_line(out.index, out["wsf"], "WSF", RZ, width=1.6, fmt=".2f"),
                   row=3, col=1)
     fig.update_yaxes(title_text="WSF (—)", range=[0, 1.02], row=3, col=1)
+    # WSF = 0.5 is where stress begins; same colour and dots as theta_c elsewhere.
+    fig.add_hline(y=0.5, line=dict(color=THETA_HALF_C, width=1, dash="dot"), row=3, col=1)
 
     # -- row 3: the two running ET totals, in the same two shades as the bars above
     for col, label, colour in (("et0", "Cumulative ET<sub>o</sub>", ET0_C),
-                               ("et", f"Cumulative ET<sub>a</sub>{kc_note}", ET0_CUM)):
+                               ("et", f"Cumulative Makkink ET<sub>a</sub>{kc_note}", ET0_CUM)):
         run = out[col].cumsum()
         fig.add_trace(_line(run.index, run.values, label, colour, width=1.8, fmt=".0f"),
                       row=4, col=1)
@@ -713,7 +905,7 @@ def evapotranspiration(
         filled = rain.fillna(0.0)
         for col, label, colour, dash in (
                 ("et0", "P − ET<sub>o</sub>", RAIN, "dash"),
-                ("et", "P − ET<sub>a</sub>", RAIN_CUM, None)):
+                ("et", "P − Makkink ET<sub>a</sub>", RAIN_CUM, None)):
             run = (filled - out[col]).cumsum()
             fig.add_trace(_line(run.index, run.values, label, colour,
                                 width=1.8, dash=dash, fmt=".0f"), row=5, col=1)
@@ -722,23 +914,18 @@ def evapotranspiration(
     else:
         fig.update_yaxes(title_text="P − ET — no gauge", row=5, col=1)
 
-    for row in (1, 2, 3, 4):
-        fig.update_xaxes(showticklabels=False, row=row, col=1)
+    # Dates under every row, not only the last: the figure is taller than a screen, so
+    # the bottom axis is usually out of sight of the row being read.
+    fig.update_xaxes(showticklabels=True, title_text="Date", title_standoff=4)
 
     if row_notes:
-        # Anchored to each row's own domain, just above its top edge, so they sit in the
-        # gap `vertical_spacing` opened for them and never over data.
-        notes = ("what the atmosphere asked, what the soil gave, and the gap between",
-                 "what fell",
-                 "the stress factor behind that gap",
-                 "the same two ET series, added up",
-                 "rain minus each, added up")
-        for row, note in enumerate(notes, start=1):
-            axis = "y domain" if row == 1 else f"y{row} domain"
-            fig.add_annotation(
-                x=0, xref="x domain", y=1.0, yref=axis, yshift=13,
-                text=note, showarrow=False, xanchor="left", yanchor="bottom",
-                font=dict(family=FONT, size=FS_NOTE, color=MUTED))
+        _row_headings(fig, (
+            "Daily demand (ET<sub>o</sub>) and supply (Makkink ET<sub>a</sub>); "
+            "the shaded gap was not met",
+            "Daily rain",
+            "Water stress factor (WSF): share of demand the soil can meet",
+            "ET<sub>o</sub> and Makkink ET<sub>a</sub>, added up",
+            "Rain minus ET<sub>o</sub> and rain minus Makkink ET<sub>a</sub>, added up"))
     return fig
 
 
@@ -915,8 +1102,10 @@ def weekly_balance(
     # Two rows, one x axis: three fluxes above, their residual below. A signed residual
     # on the same axis as the fluxes would spend half the height on nothing.
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
-                        row_heights=[0.62, 0.38], vertical_spacing=0.05)
-    _style(fig, _title(logger, f"Weekly water balance — {year}"), 540)
+                        row_heights=[0.62, 0.38], vertical_spacing=0.17)
+    _style(fig, _title(logger, f"Weekly water balance — {year}"), 680)
+    # Legend above row 1's heading, title above that.
+    fig.update_layout(margin=dict(t=112), legend=dict(y=1.06))
 
     # Two bars a week, the pair centred on the week they belong to: rain on the left,
     # evaporation on the right. The two ET terms share that one bar in two shades --
@@ -928,7 +1117,7 @@ def weekly_balance(
     for col, name, colour, opacity, offset in (
             ("precip", "rain", RAIN, 1.0, -half),
             ("et0", "ET<sub>o</sub> (demand)", ET0_C, 0.40, 0.0),
-            ("et", "ET<sub>a</sub> (supplied)", ET0_CUM, 1.0, 0.0)):
+            ("et", "Makkink ET<sub>a</sub> (supplied)", ET0_CUM, 1.0, 0.0)):
         fig.add_trace(go.Bar(
             x=weekly.index, y=weekly[col], width=half, offset=offset, name=name,
             marker_color=colour, opacity=opacity, marker_line_width=0,
@@ -946,7 +1135,9 @@ def weekly_balance(
     fig.update_layout(barmode="overlay", bargap=0.15)
     for row in (1, 2):
         fig.add_hline(y=0, line=dict(color=INK, width=1), row=row, col=1)
-    fig.update_xaxes(showticklabels=False, row=1, col=1)
+    fig.update_xaxes(showticklabels=True, title_text="Date", title_standoff=4)
+    _row_headings(fig, ("Rain and evapotranspiration per week",
+                        "Rain minus Makkink ET<sub>a</sub>: what each week added or used"))
     fig.update_yaxes(title_text="mm per week", rangemode="tozero", row=1, col=1)
     fig.update_yaxes(title_text="P − ET<br>(mm per week)", row=2, col=1)
     return fig
@@ -1061,6 +1252,8 @@ def logger_map(
     _style(fig, None, height)
     fig.update_layout(
         margin=dict(l=0, r=0, t=0, b=0), clickmode="event+select",
+        # Square, at whatever `height` the caller picked.
+        width=height, autosize=False,
         # `_style` sets "x unified", which is meaningless on a map: there is no shared x
         # to gather points along.
         hovermode="closest",
@@ -1219,7 +1412,7 @@ def water_story(
                        path=_wedge(cx0 + cw * 0.27, mm(eta), a_top, a_bot),
                        fillcolor=ET0_CUM, line_width=0))
     label(cx0 + cw * 0.27, a_bot - 2.5,
-          f"ET<sub>a</sub> <b>{eta:.1f}</b> mm/day<br>the plants get this",
+          f"Makkink ET<sub>a</sub> <b>{eta:.1f}</b> mm/day<br>the plants get this",
           xanchor="center", yanchor="top", color=ET0_CUM)
     if short > 0.01:
         shapes.append(dict(type="path",
@@ -1611,20 +1804,33 @@ def seasonal(
 
 #: What `climatology` can plot. Cumulative series restart each 1 January, so a reading is
 #: "this much so far this year" and is directly comparable with the same date in past years.
-#: Cumulative kinds come first: they answer "where does this year stand today", which is the
-#: summary question. The instantaneous state follows.
+#: Soil water first: "is the ground near drought?" is the question a grower opens the app
+#: with. The fluxes that explain it follow.
 CLIMATOLOGY_KINDS = {
-    "precip_cumulative": "Cumulative precipitation",
-    "et0_cumulative": "Cumulative ETo",
     "rzsm": "Root-zone soil moisture",
     "wsf": "Water stress factor (WSF)",
-    "et_cumulative": "Cumulative ETa",
+    "precip_cumulative": "Cumulative precipitation",
+    "et0_cumulative": "Cumulative ETo",
+    "et_cumulative": "Cumulative Makkink ETa",
     # One panel carrying both balances: P - ETo dashed, P - ETa solid, per year. They
     # were two panels and should not have been -- the gap between the pair *is* the
     # reading, and putting them on separate axes made the one comparison that matters
     # the one you could not make.
     "balance_cumulative": "Cumulative P − ET",
     "vpd_cumulative": "Cumulative vapour pressure deficit",
+}
+
+#: Chart headings, with the abbreviation spelled out. `CLIMATOLOGY_KINDS` stays the short
+#: name for menus.
+CLIMATOLOGY_TITLES = {
+    "rzsm": "Root-zone soil moisture",
+    "wsf": "Water stress factor (WSF)",
+    "precip_cumulative": "Cumulative precipitation (P)",
+    "et0_cumulative": "Cumulative reference evapotranspiration (ETo)",
+    "et_cumulative": "Cumulative Makkink ETa (ETo × WSF)",
+    "balance_cumulative": "Cumulative rain minus evapotranspiration (P − ET)",
+    "soil_temp": "Soil temperature",
+    "vpd_cumulative": "Cumulative vapour pressure deficit (VPD)",
 }
 
 #: Kinds that need this logger's own weather station. Only four of the fourteen loggers
@@ -1663,6 +1869,24 @@ def _climatology_series(df: pd.DataFrame, kind: str, freq: str,
         s = root_zone(sm, "moisture").dropna()
         return (s.resample(freq).mean().dropna(),
                 f"Root-zone soil moisture ({_UNITS['moisture']})", False)
+
+    if kind == "soil_temp":
+        # This logger's own probe, never the borrowed soil source: the question is when
+        # *this* ground warms up.
+        cols = {c.split()[-1]: c for c in depth_columns(df, "temperature")
+                if df[c].notna().mean() >= MIN_COVERAGE}
+        depth = next((k for k in ("10cm", "5cm") if k in cols), None)
+        if depth is None:
+            return pd.Series(dtype="float64"), "", False
+        t = df[cols[depth]]
+        # Not before the whole profile was in the ground. F1_5 and F1_6 logged 20 degC in
+        # January for months before their moisture probes started on 2025-06-19: a sensor
+        # on a shelf, not a soil.
+        moist = depth_columns(df, "moisture")
+        if moist:
+            t = t[t.index >= df[moist].dropna().index.min()]
+        return (t.resample(freq).mean().dropna(),
+                f"Soil temperature, {depth[:-2]} cm (°C)", False)
 
     if kind == "precip_cumulative":
         if not _has_data(wx, PRECIP):
@@ -1729,7 +1953,7 @@ def _climatology_series(df: pd.DataFrame, kind: str, freq: str,
             actual = (rain.reindex(actual.index).fillna(0.0) - actual).dropna()
             ylab = "Cumulative P − ET (mm)"
         else:
-            ylab = "Cumulative ETa (mm)"
+            ylab = "Cumulative Makkink ETa (mm)"
         actual = actual.reindex(
             pd.date_range(actual.index.min(), actual.index.max(), freq=freq)
         ).fillna(0.0)
@@ -1746,64 +1970,6 @@ def _climatology_series(df: pd.DataFrame, kind: str, freq: str,
                 f"Cumulative {'VPD' if col == VPD else 'vapour pressure'} (kPa d)", True)
 
     raise ValueError(f"unknown kind {kind!r}; choose from {sorted(CLIMATOLOGY_KINDS)}")
-
-
-def climatology_standing(df: pd.DataFrame, kind: str, *, freq: str = "1D",
-                         ref: str | None = None, met: pd.DataFrame | None = None,
-                         soil: pd.DataFrame | None = None) -> dict | None:
-    """Where this year stands today against the same date in previous complete years.
-
-    Returns the current value, the median and range of earlier years on this calendar day,
-    and the difference — the numbers behind the climatology chart, for a headline readout.
-    None when there is nothing comparable.
-    """
-    if df.empty:
-        return None
-    try:
-        s, ylab, cumulative = _climatology_series(df, kind, freq, ref, met, soil)
-    except ValueError:
-        return None
-    if s.empty:
-        return None
-
-    newest = s.index.year.max()
-    partial = {
-        y for y, part in s.groupby(s.index.year)
-        if y != newest
-        and (part.index.min().dayofyear > 15 or part.index.max().dayofyear < 350)
-    }
-    s = s[~s.index.year.isin(partial)]
-    past, now = s[s.index.year < newest], s[s.index.year == newest]
-    if past.empty or now.empty:
-        return None
-
-    doy = now.index[-1].dayofyear
-    # Compare like with like: the same calendar day in earlier years, with a few days'
-    # tolerance so a missing day doesn't blank the comparison.
-    same_day = past[(past.index.dayofyear - doy).map(abs) <= 3]
-    if same_day.empty:
-        return None
-
-    current, median = float(now.iloc[-1]), float(same_day.median())
-    return {
-        "kind": kind,
-        "label": CLIMATOLOGY_KINDS.get(kind, kind),
-        "unit": ylab,
-        "cumulative": cumulative,
-        "year": int(newest),
-        "as_of": now.index[-1],
-        "current": current,
-        "median": median,
-        "min": float(same_day.min()),
-        "max": float(same_day.max()),
-        "delta": current - median,
-        # A percentage of a quantity that changes sign is nonsense: a normal year at
-        # -50 mm and this year at -20 mm is 30 mm *less* dry, but reads as "-60%".
-        "pct": ((current - median) / median * 100
-                if median and not kind.startswith("balance") else None),
-        "years": sorted(int(y) for y in past.index.year.unique()),
-        "excluded": sorted(int(y) for y in partial),
-    }
 
 
 def _add_soil_limits(fig: go.Figure, df: pd.DataFrame,
@@ -1906,6 +2072,89 @@ def _year_traces(fig, series, *, colour, name, dash, highlight, fmt, click_targe
             hovertemplate=f"<b>{name}</b><br>click to hold this year<extra></extra>"))
 
 
+def spring_onset(s: pd.Series, *, threshold: float = SPRING_ONSET) -> dict[int, pd.Timestamp]:
+    """Per year, the day the 7-day mean rises above `threshold` and stays to end of June.
+
+    "Stays" is the point. The first warm spell is not spring: K1 ran above 8 degC in the
+    first week of January 2024. A year needs a nearly complete January-June to count.
+    """
+    week = s.asfreq("1D").rolling(7, min_periods=5).mean()
+    out = {}
+    for year, part in week.groupby(week.index.year):
+        half = part[part.index.month <= 6].dropna()
+        if len(half) < 165:
+            continue
+        below = half[half < threshold]
+        if below.empty or below.index[-1] >= half.index[-1]:
+            continue
+        out[int(year)] = half.index[half.index > below.index[-1]][0]
+    return out
+
+
+#: One colour per `stress.STATES` entry, wettest to driest, blue through orange so it
+#: holds up without red-green vision.
+STATE_COLOURS = ("#0d2a6b", "#8fb8de", "#f2d98b", "#e0781e", "#7f0000")
+
+
+def danger_calendar(
+    df: pd.DataFrame,
+    *,
+    ref: str | None = None,
+    logger: Logger | str | None = None,
+) -> go.Figure:
+    """Every day of every year, coloured by where the soil stood against its own limits.
+
+    The states are `stress.daily_state`; the cuts are the dotted lines on the root-zone
+    chart. Blank means no reading.
+    """
+    from .stress import STATES, daily_state
+
+    title = "When was this soil too dry or too wet?"
+    ref = ref if ref is not None else logger
+    try:
+        days, info = daily_state(df, ref=_ref_name(ref) if ref is not None else None)
+    except (FileNotFoundError, ValueError):
+        days, info = pd.DataFrame(), {}
+    if days.empty:
+        return _panel(_title(logger, f"{title} — needs soil moisture and soil parameters"),
+                      320)
+
+    years = sorted(days.index.year.unique())
+    fig = _panel(_title(logger, title), 150 + 44 * len(years))
+    # A 365-day year: 29 February would be a blank stripe in three rows out of four.
+    cal = pd.date_range("2001-01-01", "2001-12-31")
+    key = cal.strftime("%m-%d")
+    z, text = [], []
+    for year in years:
+        part = days[days.index.year == year]
+        part.index = part.index.strftime("%m-%d")
+        part = part.reindex(key)
+        z.append(part.state.to_numpy(dtype="float64"))
+        text.append([f"{k} {year}<br>{STATES[int(a)]}, θ = {b:.3f}" if a == a else ""
+                     for k, a, b in zip(cal.strftime("%d %b"), part.state, part.theta)])
+    n = len(STATES)
+    scale = [[(i + e) / n, c] for i, c in enumerate(STATE_COLOURS) for e in (0, 1)]
+    fig.add_trace(go.Heatmap(
+        x=cal, y=[str(y) for y in years], z=z, text=text, hoverinfo="text",
+        zmin=-0.5, zmax=n - 0.5, colorscale=scale, showscale=False, ygap=4,
+        hoverongaps=False))
+    names = ("a layer is saturated",
+             f"above field capacity (θ ≥ {info['theta_fc']:.3f})",
+             f"drying (θ ≥ {info['theta_half']:.3f})",
+             f"past “stress begins” (θ < {info['theta_half']:.3f})",
+             f"at residual (θ ≤ {info['theta_r']:.3f})")
+    seen = set(days.state.unique())
+    for i, (name, colour) in enumerate(zip(names, STATE_COLOURS)):
+        if i in seen:
+            fig.add_trace(go.Scatter(
+                x=[None], y=[None], mode="markers", name=name,
+                marker=dict(color=colour, size=13, symbol="square")))
+    fig.update_layout(hovermode="closest", margin=dict(t=92))
+    fig.update_xaxes(tickformat="%b", dtick="M1", range=["2000-12-31", "2002-01-01"])
+    fig.update_yaxes(type="category", autorange="reversed", showgrid=False)
+    return fig
+
+
 def climatology(
     df: pd.DataFrame,
     *,
@@ -1942,7 +2191,7 @@ def climatology(
     if measure is not None and kind == "rzsm" and measure != "moisture":
         # Only moisture is depth-averageable; see process.EXTENSIVE.
         raise ValueError("climatology(kind='rzsm') applies to soil moisture only")
-    title = CLIMATOLOGY_KINDS.get(kind, kind)
+    title = CLIMATOLOGY_TITLES.get(kind, CLIMATOLOGY_KINDS.get(kind, kind))
     if df.empty:
         return _panel(_title(logger, f"{title} — no data"), 400)
 
@@ -1995,7 +2244,7 @@ def climatology(
             font=dict(family=FONT, size=FS_NOTE, color=MUTED))
         fig.update_layout(margin=dict(b=82))
 
-    fmt = ".1f" if cumulative else ".3f"
+    fmt = ".1f" if cumulative or kind == "soil_temp" else ".3f"
     # Oldest palest, this year always black: the ramp encodes recency, so "the line just
     # under ours is last year" is readable without the legend. Sampled by position, so a
     # logger with three years and one with six put the same calendar year at a similar
@@ -2038,7 +2287,7 @@ def climatology(
         # has this year got" is read -- so the name meets the eye at the question. A
         # footnote sat two inches from the thing it described and got skipped.
         tail = second[second.index.year == newest]
-        pairs = [(now, "P − ET<sub>o</sub>", 14), (tail, "P − ET<sub>a</sub>", -14)]
+        pairs = [(now, "P − ET<sub>o</sub>", -14), (tail, "P − Makkink ET<sub>a</sub>", 14)]
         for part, label, shift in pairs:
             if part.empty:
                 continue
@@ -2050,7 +2299,11 @@ def climatology(
             fig.add_annotation(
                 x=at, y=float(part.values[-1]), xref="x", yref="y",
                 text=f"<b>{label}</b>", showarrow=False,
-                xanchor="left", xshift=9, yshift=shift,
+                # Late in the year there is no open ground left to the right, and a label
+                # there stretches the axis by months; put it on the near side instead.
+                xanchor="left" if at.month < 9 else "right",
+                xshift=9 if at.month < 9 else -9,
+                yshift=shift if at.month < 9 else (24 if shift > 0 else -66),
                 bgcolor="rgba(255,255,255,0.72)", borderpad=2,
                 font=dict(family=FONT, size=FS_NOTE, color=INK))
 
@@ -2066,13 +2319,26 @@ def climatology(
                   line=dict(color=AXIS, width=1, dash="dot"),
                   annotation_text="today", annotation_position="top",
                   annotation_font=dict(family=FONT, size=FS_NOTE, color=MUTED))
-    fig.update_xaxes(tickformat="%b", dtick="M1")
+    fig.update_xaxes(tickformat="%b", dtick="M1", range=["1999-12-25", "2001-01-08"])
     fig.update_yaxes(title_text=ylab,
                      range=[0, 0.6] if kind == "rzsm"
                      else [0, 1.02] if kind == "wsf" else None)
+    if kind == "soil_temp":
+        _add_growth_bands(fig, s.to_frame())
+        for year, when in spring_onset(s).items():
+            fig.add_trace(go.Scatter(
+                x=[pd.Timestamp("2000-01-01") + pd.Timedelta(days=when.dayofyear - 1)],
+                y=[float(s.rolling(7).mean().loc[when])], mode="markers", showlegend=False,
+                marker=dict(size=10, color=colours.get(year, INK),
+                            line=dict(color=INK, width=1.2)),
+                hovertemplate=f"<b>{year}</b><br>{SPRING_ONSET:g} °C for good from "
+                              f"{when:%d %B}<extra></extra>"))
     if kind == "rzsm":
         # The lines that turn a moisture curve into a statement about the plants.
         _add_soil_limits(fig, soil if soil is not None else df, who)
+    if kind == "wsf":
+        # Where stress begins; same colour and dots as theta_c on the moisture panel.
+        fig.add_hline(y=0.5, line=dict(color=THETA_HALF_C, width=1, dash="dot"))
     if kind == "balance_cumulative":
         # This one crosses zero, and which side of it the year sits on is the reading.
         fig.add_hline(y=0, line=dict(color=AXIS, width=1, dash="dot"))

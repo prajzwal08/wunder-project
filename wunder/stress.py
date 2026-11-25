@@ -399,6 +399,89 @@ def actual_et(
     return out
 
 
+#: A soil this wet does not exist. z6-21179's 5 cm probe has daily means near 1.8.
+IMPOSSIBLE_THETA = 0.70
+
+#: The states `daily_state` returns, wettest first.
+STATES = ("saturated", "above field capacity", "drying", "stress", "residual")
+
+
+def daily_state(df: pd.DataFrame, **kw) -> tuple[pd.DataFrame, dict]:
+    """Where each day's soil stands against this profile's own four limits.
+
+    Returns `(days, info)`; `days` has `theta` (daily root-zone mean) and `state`, an
+    index into `STATES`. `info` is `root_zone_limits`.
+
+    No threshold of its own: the cuts are theta_fc, theta_c (stress begins) and theta_r,
+    the lines already drawn on the root-zone chart, so the two can never disagree.
+    Saturation is the exception and is judged **per layer** -- any layer at or above its
+    own theta_sat -- because the root-zone mean has never reached saturation at any
+    logger. A profile below theta_c is "stress" whatever one deep layer does.
+    """
+    info = root_zone_limits(df, **kw)
+    if not info:
+        return pd.DataFrame(columns=["theta", "state"]), {}
+    cols = info["columns"]
+    d = df[cols].where(df[cols] <= IMPOSSIBLE_THETA).resample("1D").mean()
+    weights = np.asarray(info["thicknesses"], dtype="float64")
+    out = pd.DataFrame({"theta": d.to_numpy() @ weights / weights.sum()}, index=d.index)
+    sat = np.array([info["limits"][_depth_of(c)]["theta_sat"] for c in cols])
+    any_sat = d.ge(sat).any(axis=1)
+    out["state"] = np.select(
+        [out.theta <= info["theta_r"], out.theta < info["theta_half"], any_sat,
+         out.theta < info["theta_fc"]], [4, 3, 0, 2], default=1)
+    out = out.dropna(subset=["theta"])
+    info["layers"] = d.loc[out.index]
+    return out, info
+
+
+def days_to_stress(df: pd.DataFrame, met: pd.DataFrame, *, max_days: int = 30,
+                   **kw) -> dict:
+    """Days until the root zone reaches theta_c, with no rain and normal demand.
+
+    Steps one day at a time from the latest complete day. Each layer gives up
+    `WSF_i * ETo / (10 * total thickness)`, which is how the thickness-weighted ETa in
+    `actual_et` already divides across layers, so nothing new is assumed. ETo is the
+    station's own mean for that time of year (earlier years, +/- 7 days).
+
+    `{}` without soil or weather. Otherwise `date`, `theta`, `theta_c`, `state`, `days`:
+    0 when already past the line, None when `max_days` is not enough to get there.
+    """
+    from .et import reference_et
+
+    state, info = daily_state(df, **kw)
+    if state.empty:
+        return {}
+    last = state.index[-1]
+    out = {"date": last, "theta": float(state.theta.iloc[-1]),
+           "theta_c": info["theta_half"], "theta_fc": info["theta_fc"],
+           "state": STATES[int(state.state.iloc[-1])], "days": None,
+           "max_days": max_days}
+    if out["theta"] < out["theta_c"]:
+        return out | {"days": 0}
+    et0 = reference_et(met)
+    if et0.empty:
+        return out | {"max_days": None}
+    past = et0[et0.index.year < last.year]
+    normal = past if len(past) >= 300 else et0
+    doy = normal.index.dayofyear.to_numpy()
+
+    cols, weights = info["columns"], np.asarray(info["thicknesses"], dtype="float64")
+    theta = info["layers"].iloc[-1].to_numpy(dtype="float64").copy()
+    limits = [info["limits"][_depth_of(c)] for c in cols]
+    for n in range(1, max_days + 1):
+        gap = np.abs(doy - (last + pd.Timedelta(days=n)).dayofyear)
+        near = np.minimum(gap, 365 - gap) <= 7
+        if not near.any():
+            return out | {"max_days": None}
+        demand = float(normal.to_numpy()[near].mean())
+        wsf = np.array([stress_factor(t, **lim) for t, lim in zip(theta, limits)])
+        theta -= wsf * demand / (10.0 * weights.sum())
+        if theta @ weights / weights.sum() < out["theta_c"]:
+            return out | {"days": n}
+    return out
+
+
 def _weather_for(df: pd.DataFrame, ref: str | None):
     """(met frame, station name) for a soil logger -- its own, or its field's ATMOS-41.
 

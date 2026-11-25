@@ -12,6 +12,8 @@ Nothing here imports Streamlit; the app is a separate, thin layer.
 """
 
 from . import et
+from . import explain
+from . import flux
 from . import stress
 from . import fetch as fetch_module
 from . import publish
@@ -63,8 +65,10 @@ __all__ = [
     "depth_columns",
     "depths_of",
     "et",
+    "explain",
     "fetch",
     "field_series",
+    "flux",
     "housekeeping_columns",
     "is_stale",
     "logger",

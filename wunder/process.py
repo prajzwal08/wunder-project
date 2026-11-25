@@ -249,7 +249,11 @@ def coverage(df: pd.DataFrame, freq: str = "1D") -> pd.DataFrame:
     """
     if df.empty:
         return pd.DataFrame()
-    expected = pd.Timedelta(freq) / pd.Timedelta(minutes=5)
+    # The frame's own step, not an assumed 5 minutes: the published snapshot is 30-minute,
+    # and against 288 a day a perfect record there showed as 17%.
+    step = pd.Series(df.index).diff().median()
+    step = step if pd.notna(step) and step > pd.Timedelta(0) else pd.Timedelta(minutes=5)
+    expected = pd.Timedelta(freq) / step
     return (df.resample(freq).count() / expected).clip(upper=1.0)
 
 
