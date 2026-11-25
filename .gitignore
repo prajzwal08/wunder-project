@@ -8,8 +8,9 @@ data/raw/
 # `python -m wunder.publish`.
 !data/published/
 
-# Eddy-covariance and model ET: not ours to publish. See wunder/flux.py.
-data/flux/
+# Daily flux comparison, June-August 2025, is published; nothing else from it is.
+data/flux/*
+!data/flux/NL-Gl1_daily.csv
 
 __pycache__/
 *.pyc

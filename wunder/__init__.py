@@ -15,6 +15,7 @@ from . import et
 from . import explain
 from . import flux
 from . import stress
+from . import download
 from . import fetch as fetch_module
 from . import publish
 from . import plots as plot
@@ -64,6 +65,7 @@ __all__ = [
     "cumulative_year",
     "depth_columns",
     "depths_of",
+    "download",
     "et",
     "explain",
     "fetch",

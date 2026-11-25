@@ -46,7 +46,7 @@ import wunder; wunder.update_all()
 | Soil temperature | By depth, with air temperature and a 0 °C line |
 | Water potential | Matric potential against VPD — soil supply vs atmospheric demand. VPD comes from the field's ATMOS-41 station, since the TEROS21 loggers carry no weather sensor |
 | Weather | Rainfall (with cumulative), temperature + radiation, VPD + air temperature |
-| Evapotranspiration | Five panels on one x axis, each with its own heading and dates: daily ETo and Makkink ETa (ETo × WSF); rain; WSF; both totals; and cumulative P − ETo against P − Makkink ETa. Measured record at Kᶜ = 1 with nothing to adjust; the method, a live Kᶜ and an irrigation calculator are in the **Understand** tab. On a machine holding the private flux file (`wunder/flux.py`), Field 1 loggers also show June–August 2025 against eddy covariance and STEMMUS-SCOPE |
+| Evapotranspiration | Five panels on one x axis, each with its own heading and dates: daily ETo and Makkink ETa (ETo × WSF); rain; WSF; both totals; and cumulative P − ETo against P − Makkink ETa. Measured record at Kᶜ = 1 with nothing to adjust; the method, a live Kᶜ and an irrigation calculator are in the **Understand** tab. Field 1 loggers also show June–August 2025 against eddy covariance and STEMMUS-SCOPE |
 | **Understand** | Opens with **one picture of the whole chain** — the atmosphere asks, the soil opens a gate, what got through and what did not, the profile it came from and the millimetres that would refill it — with three sliders driving all of it. Under that, folded away: what ETo and ETa are, the stress function with its own sliders, the maths layer by layer, and the record with a live Kᶜ. It is **the only tab with anything to drag** — the data tabs are fixed, so a number read off one of them is always the same number. What ETo and ETa are in plain words; the evapotranspiration figure again with a live Kᶜ, so you can see what a different canopy assumption would do; the WSF curve with sliders on θ, θ_s, θ_fc, θ_r and the steepness, opening on the real soil under this logger; and **an irrigation calculator** — put a soil wetness and a day's demand together and it gives WSF, ETa, the demand the canopy is not getting, the millimetres that would refill the root zone, and how long until stress begins |
 | Wind | Wind rose, 16 sectors, ordinal speed bins, calm excluded and reported |
 | Variables | Any column, on demand |
@@ -346,7 +346,8 @@ wunder/process.py    root-zone averages, resampling, wind binning, sensor lifeti
 wunder/et.py         Makkink reference ET (ETo) and the P − ETo water balance
 wunder/stress.py     sigmoid water stress factor, Makkink ETa, retention curves
 wunder/explain.py    the "What is it, and why does it matter?" text under every chart
-wunder/flux.py       daily ET from the eddy tower and STEMMUS-SCOPE (private data, not committed)
+wunder/flux.py       daily ET from the eddy tower and STEMMUS-SCOPE, June–August 2025
+wunder/download.py   the CSV files behind "Download data" in the sidebar
 forcing/extract_soil.py   caches the model's soil hydraulics as JSON (needs the geo env)
 model_input/soil/    SoilGrids van Genuchten parameters per site, committed
 wunder/plots.py      Plotly figure builders

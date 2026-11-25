@@ -2,9 +2,9 @@
 
     python -m wunder.flux        # rebuild data/flux/NL-Gl1_daily.csv
 
-**The output is gitignored and must stay so** until the data provider agrees otherwise:
-the eddy record is not public, this repository is. A deployment without the file simply
-does not show the comparison.
+The output is committed, cleared for publication on 2026-11-25, and holds only the daily
+values the dashboard shows. The half-hourly eddy record it comes from is not public.
+A deployment without the file simply does not show the comparison.
 
 Both series are converted to mm per local (Europe/Amsterdam) day, the day the loggers and
 ETo use. Two assumptions, neither confirmed by the provider: the tower's time stamps are
@@ -21,6 +21,8 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "data" / "flux" / "NL-Gl1_daily.csv"
 SITE = "NL-Gl1"
+#: The period that is published, and shown.
+YEAR, MONTHS = 2025, (6, 7, 8)
 
 PAPER01 = Path.home() / "paper01" / "GlanerbeekEddy"
 EDDY = PAPER01 / "Gla_2024_2025_Reddyproc_U50_qc01_results.csv"
@@ -63,6 +65,8 @@ def model_daily(path=MODEL, start=MODEL_START) -> pd.Series:
 
 def build(out=OUT) -> pd.DataFrame:
     frame = eddy_daily().join(model_daily(), how="outer").sort_index()
+    # Only what the dashboard shows. This file is committed to a public repository.
+    frame = frame[(frame.index.year == YEAR) & frame.index.month.isin(MONTHS)]
     frame.index.name = "date"
     out.parent.mkdir(parents=True, exist_ok=True)
     frame.round(4).to_csv(out)

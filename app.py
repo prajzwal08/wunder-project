@@ -94,7 +94,7 @@ HAS_STRESS = (hasattr(w, "stress") and hasattr(w, "soil_source")
 _NEEDS = ("water_story", "logger_map", "evapotranspiration", "wsf_explorer",
           "limit_key", "compact", "BASEMAPS")
 _stale = [n for n in _NEEDS if not hasattr(w.plot, n)]
-_stale += [n for n in ("explain", "flux") if not hasattr(w, n)]
+_stale += [n for n in ("explain", "flux", "download") if not hasattr(w, n)]
 if _stale:
     st.error(
         "**This deployment is running an older copy of the `wunder` package than "
@@ -774,9 +774,7 @@ if "Evapotranspiration" in tabs:
 
         with_period("et", _et, default="6M")
 
-        # The tower and the model exist for Field 1 in 2025 only, and only on a machine
-        # that holds the private file (see wunder/flux.py) -- a public deployment shows
-        # nothing here.
+        # The tower and the model exist for Field 1 in summer 2025 only (wunder/flux.py).
         def _flux() -> None:
             fl = w.flux.read()
             if fl.empty or soil_full is None or met_full is None:
@@ -787,7 +785,7 @@ if "Evapotranspiration" in tabs:
                 est = w.stress.actual_et(soil_full, met_full, ref=soil_lg.serial)
             except (FileNotFoundError, ValueError):
                 return
-            year, months = 2025, (6, 7, 8)
+            year, months = w.flux.YEAR, w.flux.MONTHS
             both = est[["et0", "et"]].join(fl[["eddy", "model"]], how="inner")
             both = both[(both.index.year == year)
                         & both.index.month.isin(months)].dropna()
@@ -1264,3 +1262,49 @@ with tabs["Loggers"]:
 
 st.sidebar.divider()
 st.sidebar.caption(f"{len(full):,} rows on record")
+
+
+@st.fragment
+def download_panel() -> None:
+    """Data to take away, for the logger on screen."""
+    st.markdown("**Download data**")
+    kinds = {"Measurements, 30 min": "measurements", "Daily values": "daily"}
+    if lg.serial in w.metadata.forcing_sites().get(w.flux.SITE, {}).get(
+            "soil_loggers", []) and not w.flux.read().empty:
+        kinds["Eddy covariance and STEMMUS-SCOPE ET"] = "fluxes"
+    kind = kinds[st.selectbox("Data", list(kinds), key="dl_kind")]
+    if kind == "fluxes":
+        start = end = None
+        st.caption("Daily, June to August 2025.")
+        name = f"{w.flux.SITE}_ET_2025.csv"
+    else:
+        first, last = full.index.min().date(), full.index.max().date()
+        # Keyed by logger: another logger has another record, and a range kept from the
+        # last one can fall outside it.
+        a, b = st.columns(2)
+        start = a.date_input("From", first, min_value=first, max_value=last,
+                             key=f"dl_a_{lg.serial}")
+        end = b.date_input("To", last, min_value=first, max_value=last,
+                           key=f"dl_b_{lg.serial}")
+        if start > end:
+            st.warning("The start date is after the end date.")
+            return
+        name = f"{lg.name}_{kind}_{start}_{end}.csv"
+
+    # Built when the button is pressed, not on every redraw: three years at 30 minutes is
+    # several megabytes.
+    def make() -> str:
+        if kind == "fluxes":
+            return w.download.fluxes()
+        if kind == "measurements":
+            return w.download.measurements(lg, full, start, end)
+        return w.download.daily(lg, soil_full, met_full, soil_lg=soil_lg, met_lg=met_lg,
+                                own=full, start=start, end=end)
+
+    st.download_button("Download CSV", make, file_name=name, mime="text/csv",
+                       width="stretch", key="dl_go", on_click="ignore")
+
+
+with st.sidebar:
+    st.divider()
+    download_panel()
